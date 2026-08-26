@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-retailos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-retailos}
+      POSTGRES_DB: ${POSTGRES_DB:-retailos}
+    ports: ["5432:5432"]
+    volumes: ["retailos-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    image: retailos-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: ${RETAILOS_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-retailos}:${POSTGRES_PASSWORD:-retailos}@postgres:5432/${POSTGRES_DB:-retailos}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  seed:
+    image: retailos-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: ${RETAILOS_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-retailos}:${POSTGRES_PASSWORD:-retailos}@postgres:5432/${POSTGRES_DB:-retailos}?schema=public
+    command: ["node", "dist/prisma/seed.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+volumes:
+  retailos-postgres:

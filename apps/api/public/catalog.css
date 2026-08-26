@@ -1,0 +1,3 @@
+.lookup-actions{display:flex;gap:9px;align-items:center;margin-top:15px}
+.catalog-meta{display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.tag{font-size:11px;background:#edf2ee;color:#3a5145;border-radius:99px;padding:3px 7px;font-weight:800}

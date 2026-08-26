@@ -1,0 +1,64 @@
+/* Phone-first refinements. Keeping controls at 16px avoids browser zoom on input focus. */
+@media (max-width: 640px) {
+  body { padding-bottom: env(safe-area-inset-bottom); }
+  .shell { padding: 16px 12px 28px; }
+  h1 { font-size: 25px; margin-bottom: 14px; }
+  h2 { font-size: 19px; }
+  input, select { font-size: 16px; min-height: 46px; }
+  button { min-height: 44px; padding: 10px 12px; }
+
+  .pos header { display: block; }
+  .session { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .session span { grid-column: 1 / -1; font-weight: 800; }
+  .session button:last-child { grid-column: 1 / -1; }
+
+  .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 12px 0 16px; }
+  .settings label { min-width: 0; }
+  .settings .shift-status { grid-column: 1 / -1; padding: 4px 0; }
+  .settings button { width: 100%; }
+
+  .workspace { grid-template-columns: 1fr; gap: 14px; }
+  .panel { padding: 15px; border-radius: 12px; }
+  .lookup form { gap: 7px; margin-top: 13px; }
+  .lookup form button { width: 100%; }
+  .lookup-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .product { align-items: stretch; display: grid; grid-template-columns: 1fr; }
+  .product button { width: 100%; }
+
+  .cart-title { gap: 10px; }
+  .cart-title button { white-space: nowrap; }
+  .cart-line { grid-template-columns: 1fr 74px; gap: 8px; }
+  .cart-line select { min-height: 40px; padding: 8px; }
+  .cart-line input { min-height: 42px; padding: 8px; }
+  .line-actions { flex-wrap: wrap; margin-top: 7px; }
+  .line-actions button { min-height: 38px; padding: 7px 10px; }
+  .line-total { grid-column: 1 / -1; text-align: right; font-size: 17px; }
+  .grand { font-size: 23px; }
+  .pay { min-height: 54px; position: sticky; bottom: 8px; box-shadow: 0 5px 16px #14302038; }
+
+  .duitnow-payment, .bank-transfer-payment, .split-payment { padding: 13px; }
+  .duitnow-payment img { width: min(100%, 270px); }
+  .duitnow-actions { display: grid; grid-template-columns: 1fr; }
+  .split-fields { gap: 8px; }
+  .split-details img { width: min(100%, 230px); }
+  #confirm-split { width: 100%; min-height: 52px; }
+
+  .receipt-panel { margin-top: 14px; }
+  .return-item { align-items: start; gap: 8px; }
+  .return-item input { max-width: 90px; }
+  .history-item { align-items: stretch; display: grid; grid-template-columns: 1fr; }
+  .history-item div:last-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .history-item button { min-width: 74px; }
+  .receipt-panel form { gap: 8px; }
+  .receipt-panel form button { width: 100%; }
+  .printable-receipt { padding: 13px; }
+}
+
+@media (max-width: 380px) {
+  .settings { grid-template-columns: 1fr; }
+  .settings .shift-status { grid-column: auto; }
+  .session { grid-template-columns: 1fr; }
+  .session button:last-child { grid-column: auto; }
+  .cart-title { align-items: stretch; flex-direction: column; }
+  .cart-title button { width: 100%; }
+}

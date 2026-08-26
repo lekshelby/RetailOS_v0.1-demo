@@ -1,0 +1,15 @@
+# Local-only profile: both the POS and PostgreSQL are reachable only from the
+# Windows host. Do not use this profile when phones or other LAN devices must
+# access RetailOS.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:55432:5432"
+  api:
+    env_file:
+      - .env.local
+    ports:
+      - "127.0.0.1:31080:3000"
+  seed:
+    env_file:
+      - .env.local

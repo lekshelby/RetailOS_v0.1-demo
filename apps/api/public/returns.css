@@ -1,0 +1,1 @@
+.return-sale{display:grid;gap:10px}.return-item{display:flex;gap:10px;align-items:center;border-bottom:1px solid #edf0ed;padding:9px 0}.return-item input{max-width:92px}.return-options{display:grid;gap:10px;margin-top:12px}@media(max-width:760px){.return-item{align-items:flex-start;flex-direction:column}.return-item input{max-width:none;width:100%}}

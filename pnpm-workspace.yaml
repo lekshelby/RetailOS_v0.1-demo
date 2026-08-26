@@ -1,0 +1,17 @@
+packages:
+  - apps/*
+  - packages/*
+confirmModulesPurge: false
+virtualStoreDir: node_modules/.pnpm-new
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - '@prisma/client'
+  - '@prisma/engines'
+  - esbuild
+  - prisma
+allowBuilds:
+  '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

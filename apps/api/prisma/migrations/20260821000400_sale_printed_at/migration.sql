@@ -1,0 +1,1 @@
+ALTER TABLE "Sale" ADD COLUMN "printedAt" TIMESTAMP(3);
