@@ -11,10 +11,10 @@ export class ShiftsController {
   @Get(':id/report') report(@Param('id') id: string, @Query('companyId') companyId: string, @Query('actorId') actorId: string) { return this.shifts.report(id, companyId, actorId); }
   @Get(':id/daily-digest.xlsx')
   @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  async dailyDigest(@Param('id') id: string, @Query('companyId') companyId: string, @Query('actorId') actorId: string, @Res({ passthrough: true }) response: { setHeader(name: string, value: string): void }) {
+  async dailyDigest(@Param('id') id: string, @Query('companyId') companyId: string, @Query('actorId') actorId: string, @Res() response: { setHeader(name: string, value: string): void; send(value: Buffer): void }) {
     const digest = await this.shifts.downloadDailyDigest(id, companyId, actorId);
     response.setHeader('Content-Disposition', `attachment; filename="${digest.fileName}"`);
-    return digest.content;
+    response.send(digest.content);
   }
   @Post(':id/report/print') printReport(@Param('id') id: string, @Body() input: { companyId: string; actorId: string }) { return this.shifts.printReport(id, input.companyId, input.actorId); }
   @Post(':id/movements') movement(@Param('id') id: string, @Body() input: CashMovementDto) { return this.shifts.addMovement(id, input); }
