@@ -172,7 +172,7 @@ export class ShiftsService {
       where: { id: shiftId, location: { companyId } },
       include: {
         location: true, register: true, cashier: { select: { name: true } }, movements: { orderBy: { createdAt: 'asc' } },
-        sales: { where: { status: 'COMPLETED' }, orderBy: { completedAt: 'asc' }, include: { cashier: { select: { name: true } }, customer: { select: { name: true, contactCode: true } }, payments: { where: { status: 'COMPLETED' } }, items: { include: { product: { select: { sku: true, name: true } }, uom: { select: { name: true } } } } } },
+        sales: { where: { status: 'COMPLETED' }, orderBy: { completedAt: 'asc' }, include: { cashier: { select: { name: true } }, customer: { select: { name: true, contactCode: true } }, payments: { where: { status: 'COMPLETED' } }, items: { include: { product: { select: { sku: true, name: true, basePurchaseCost: true, purchasePrices: { select: { uomId: true, amount: true } } } }, uom: { select: { name: true, conversionFactor: true } } } } } },
         processedReturns: { where: { status: 'COMPLETED' }, orderBy: { createdAt: 'asc' }, include: { payments: true } },
       },
     });
@@ -181,23 +181,29 @@ export class ShiftsService {
     const paymentTotals: Record<string, number> = {};
     for (const sale of shift.sales) for (const payment of sale.payments) paymentTotals[payment.method] = (paymentTotals[payment.method] ?? 0) + Number(payment.amount) - Number(payment.changeAmount);
     const summary = { ...summaryBase, ...reconcileCash({ ...summaryBase, countedCash: shift.closingFloat == null ? undefined : Number(shift.closingFloat) }), salesCount: shift.sales.length, grossSales: shift.sales.reduce((sum, sale) => sum + Number(sale.grandTotal), 0), discountTotal: shift.sales.reduce((sum, sale) => sum + Number(sale.discountTotal), 0) };
-    const itemTotals = new Map<string, { sku: string; description: string; uom: string; quantity: number; gross: number; discount: number; tax: number; net: number }>();
+    const itemTotals = new Map<string, { sku: string; description: string; uom: string; quantity: number; gross: number; discount: number; tax: number; net: number; totalCost: number; costKnown: boolean }>();
     const orderRows = shift.sales.map((sale) => {
       const payments = sale.payments.map((payment) => `${payment.method}: ${(Number(payment.amount) - Number(payment.changeAmount)).toFixed(2)}${payment.reference ? ` (${payment.reference})` : ''}`).join('; ');
       for (const item of sale.items) {
         const key = `${item.product.sku}|${item.description}|${item.uom.name}`;
-        const existing = itemTotals.get(key) ?? { sku: item.product.sku, description: item.description || item.product.name, uom: item.uom.name, quantity: 0, gross: 0, discount: 0, tax: 0, net: 0 };
-        existing.quantity += Number(item.quantity); existing.gross += Number(item.unitPrice) * Number(item.quantity); existing.discount += Number(item.lineDiscount); existing.tax += Number(item.taxAmount); existing.net += Number(item.lineTotal); itemTotals.set(key, existing);
+        const unitCost = this.saleItemUnitCost(item);
+        const existing = itemTotals.get(key) ?? { sku: item.product.sku, description: item.description || item.product.name, uom: item.uom.name, quantity: 0, gross: 0, discount: 0, tax: 0, net: 0, totalCost: 0, costKnown: true };
+        existing.quantity += Number(item.quantity); existing.gross += Number(item.unitPrice) * Number(item.quantity); existing.discount += Number(item.lineDiscount); existing.tax += Number(item.taxAmount); existing.net += Number(item.lineTotal);
+        if (unitCost === null) existing.costKnown = false; else existing.totalCost += unitCost * Number(item.quantity);
+        itemTotals.set(key, existing);
       }
       return [sale.receiptNo, sale.completedAt ?? sale.createdAt, sale.cashier.name, sale.customer?.contactCode ?? '', sale.customer?.name ?? 'Walk-in customer', Number(sale.subtotal), Number(sale.discountTotal), Number(sale.taxTotal), Number(sale.grandTotal), payments];
     });
-    const itemRows = shift.sales.flatMap((sale) => sale.items.map((item) => [sale.receiptNo, sale.completedAt ?? sale.createdAt, item.product.sku, item.description || item.product.name, item.uom.name, Number(item.quantity), Number(item.baseQuantity), Number(item.unitPrice), Number(item.lineDiscount), Number(item.taxAmount), Number(item.lineTotal), sale.payments.map((payment) => payment.method).join('; ')]));
+    const itemRows = shift.sales.flatMap((sale) => sale.items.map((item) => {
+      const unitCost = this.saleItemUnitCost(item); const totalCost = unitCost === null ? null : unitCost * Number(item.quantity);
+      return [sale.receiptNo, sale.completedAt ?? sale.createdAt, item.product.sku, item.description || item.product.name, item.uom.name, Number(item.quantity), Number(item.baseQuantity), Number(item.unitPrice), Number(item.lineDiscount), Number(item.taxAmount), Number(item.lineTotal), unitCost ?? '', totalCost ?? '', totalCost === null ? '' : Number(item.lineTotal) - totalCost, sale.payments.map((payment) => payment.method).join('; ')];
+    }));
     const businessDate = (shift.closedAt ?? new Date()).toISOString().slice(0, 10);
     const sheets: XlsxSheet[] = [
       { name: 'Daily Digest', widths: [26, 24, 24, 20], rows: [['RetailOS daily shift digest', '', '', ''], ['Business date', businessDate], ['Location', shift.location.name], ['Register', shift.register.name], ['Cashier', shift.cashier.name], ['Opened', shift.openedAt], ['Closed', shift.closedAt], ['Opening float', summary.openingFloat], ['Closing float', shift.closingFloat == null ? '' : Number(shift.closingFloat)], ['Expected cash', summary.expectedCash], ['Cash variance', summary.variance ?? ''], ['Completed orders', summary.salesCount], ['Gross sales', summary.grossSales], ['Discounts', summary.discountTotal], ['Returns', shift.processedReturns.reduce((sum, record) => sum + Number(record.total), 0)], [], ['Payment method', 'Net amount'], ...Object.entries(paymentTotals)], },
       { name: 'Orders', widths: [18, 21, 22, 18, 28, 14, 14, 14, 14, 42], rows: [['Receipt no.', 'Completed at', 'Cashier', 'Customer code', 'Customer', 'Subtotal', 'Discount', 'Tax', 'Total', 'Payment method(s)'], ...orderRows] },
-      { name: 'Items Sold', widths: [18, 21, 18, 36, 14, 12, 14, 14, 14, 14, 14, 30], rows: [['Receipt no.', 'Completed at', 'SKU', 'Item', 'UOM', 'Quantity', 'Base quantity', 'Unit price', 'Line discount', 'Tax', 'Line total', 'Payment method(s)'], ...itemRows] },
-      { name: 'Item Summary', widths: [18, 38, 14, 14, 14, 14, 14, 14], rows: [['SKU', 'Item', 'UOM', 'Quantity', 'Gross', 'Discount', 'Tax', 'Net sales'], ...[...itemTotals.values()].sort((a, b) => a.description.localeCompare(b.description)).map((item) => [item.sku, item.description, item.uom, item.quantity, item.gross, item.discount, item.tax, item.net])] },
+      { name: 'Items Sold', widths: [18, 21, 18, 36, 14, 12, 14, 14, 14, 14, 14, 14, 14, 14, 30], rows: [['Receipt no.', 'Completed at', 'SKU', 'Item', 'UOM', 'Quantity', 'Base quantity', 'Unit price', 'Line discount', 'Tax', 'Line total', 'Unit cost', 'Total cost', 'Gross margin', 'Payment method(s)'], ...itemRows] },
+      { name: 'Item Summary', widths: [18, 38, 14, 14, 14, 14, 14, 14, 14, 14], rows: [['SKU', 'Item', 'UOM', 'Quantity', 'Gross', 'Discount', 'Tax', 'Net sales', 'Total cost', 'Gross margin'], ...[...itemTotals.values()].sort((a, b) => a.description.localeCompare(b.description)).map((item) => [item.sku, item.description, item.uom, item.quantity, item.gross, item.discount, item.tax, item.net, item.costKnown ? item.totalCost : '', item.costKnown ? item.net - item.totalCost : ''])] },
       { name: 'Returns', widths: [18, 21, 18, 16, 24], rows: [['Type', 'Completed at', 'Total', 'Payment method(s)', 'Reference'], ...shift.processedReturns.map((record) => [record.type, record.createdAt, Number(record.total), record.payments.map((payment) => payment.method).join('; '), record.payments.map((payment) => payment.reference ?? '').filter(Boolean).join('; ')])] },
       { name: 'Cash Movements', widths: [18, 18, 18, 48], rows: [['Type', 'Amount', 'Created at', 'Reason'], ...shift.movements.map((movement) => [movement.type, Number(movement.amount), movement.createdAt, movement.reason])] },
     ];
@@ -206,6 +212,13 @@ export class ShiftsService {
     const filePath = join(exportRoot, fileName);
     await writeXlsx(filePath, sheets);
     return { fileName, filePath, businessDate, salesCount: shift.sales.length, itemCount: itemRows.length, salesTotal: summary.grossSales, paymentTotals };
+  }
+
+  private saleItemUnitCost(item: { product: { basePurchaseCost: Prisma.Decimal | null; purchasePrices: Array<{ uomId: string; amount: Prisma.Decimal }> }; uomId: string; uom: { conversionFactor: Prisma.Decimal } }) {
+    const uomCost = item.product.purchasePrices.find((price) => price.uomId === item.uomId)?.amount;
+    if (uomCost != null) return Number(uomCost);
+    if (item.product.basePurchaseCost == null) return null;
+    return Number(item.product.basePurchaseCost) * Number(item.uom.conversionFactor);
   }
 
   private async status(shiftId: string, companyId: string) {
