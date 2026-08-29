@@ -682,14 +682,15 @@ async function completeCheckout(paymentConfirmed = false, cashTendered) {
 function managerQuery() { return `companyId=${encodeURIComponent(state.config.company.id)}&actorId=${encodeURIComponent(state.user.id)}`; }
 function hasPermission(permission) { return state.user.permissions.includes(permission); }
 function showManagementTab(name) {
-  const neededPermission = name === 'company' ? 'company.manage' : name === 'printer' ? 'printer.manage' : name === 'products' ? 'catalog.manage' : name === 'contacts' ? 'contact.manage' : null;
+  const neededPermission = name === 'company' || name === 'staff' ? 'company.manage' : name === 'printer' ? 'printer.manage' : name === 'products' ? 'catalog.manage' : name === 'contacts' ? 'contact.manage' : null;
   if (neededPermission && !hasPermission(neededPermission)) throw new Error('You do not have access to this section');
-  ['settings', 'company', 'printer', 'products', 'contacts'].forEach((section) => $(`#management-${section}`).classList.toggle('hidden', section !== name));
+  ['settings', 'company', 'printer', 'staff', 'products', 'contacts'].forEach((section) => $(`#management-${section}`).classList.toggle('hidden', section !== name));
   $('#show-company-settings').classList.toggle('hidden', !hasPermission('company.manage'));
   $('#show-printer-settings').classList.toggle('hidden', !hasPermission('printer.manage'));
+  $('#show-staff-settings').classList.toggle('hidden', !hasPermission('company.manage'));
   $('#add-product-float').classList.toggle('hidden', name !== 'products' || !hasPermission('catalog.manage'));
   $('#add-contact-float').classList.toggle('hidden', name !== 'contacts' || !hasPermission('contact.manage'));
-  const copy = { settings: ['Settings', 'Company and printer settings.'], company: ['Company details', 'Business details used on every receipt.'], printer: ['Printer settings', 'Receipt paper and footer message.'], products: ['Products', 'Search your product catalogue. Use + to add a new local product.'], contacts: ['Contacts', 'Search your customer and contact list. Use + to add a new local contact.'] };
+  const copy = { settings: ['Settings', 'Company, staff and printer settings.'], company: ['Company details', 'Business details used on every receipt.'], printer: ['Printer settings', 'Receipt paper and footer message.'], staff: ['Staff accounts', 'Create real cashier and manager accounts, then retire demo accounts.'], products: ['Products', 'Search your product catalogue. Use + to add a new local product.'], contacts: ['Contacts', 'Search your customer and contact list. Use + to add a new local contact.'] };
   $('#management-title').textContent = copy[name][0]; $('#management-intro').textContent = copy[name][1];
 }
 async function loadCompanyProfile() {
@@ -747,12 +748,18 @@ async function loadManagedContacts() {
   const contacts = await request(`/management/contacts?${managerQuery()}${query ? `&query=${encodeURIComponent(query)}` : ''}`);
   $('#managed-contact-list').innerHTML = contacts.length ? contacts.map((contact) => `<article class="managed-item"><strong>${escapeHtml(contact.name)}</strong><p>${[contact.contactCode, contact.entityType?.replaceAll('_', ' '), contact.contactTypes?.join(', '), contact.organization, contact.phone, contact.email, contact.taxId ? `TIN ${contact.taxId}` : ''].filter(Boolean).map(escapeHtml).join(' · ') || 'No other details'}</p></article>`).join('') : '<p class="muted">No matching contacts.</p>';
 }
+async function loadManagedStaff() {
+  const data = await request(`/management/staff?${managerQuery()}`);
+  $('#managed-staff-role').innerHTML = data.roles.map((role) => `<option value="${escapeHtml(role.id)}">${escapeHtml(role.name)}</option>`).join('');
+  $('#managed-staff-list').innerHTML = data.users.length ? data.users.map((user) => `<article class="managed-item"><strong>${escapeHtml(user.name)}</strong><p>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · <span class="tag">${user.active ? 'Active' : 'Inactive'}</span></p>${user.active && user.id !== state.user.id ? `<button type="button" class="quiet" data-disable-staff="${escapeHtml(user.id)}">Disable account</button>` : ''}</article>`).join('') : '<p class="muted">No staff accounts found.</p>';
+}
 async function openManagement(tab = 'products') {
   if (tab !== 'settings' && !['company.manage', 'printer.manage', 'catalog.manage', 'contact.manage'].some((permission) => hasPermission(permission))) throw new Error('You do not have access to this section');
   $('#management-message').textContent = '';
   showManagementTab(tab);
   reveal($('#management-panel'));
   if (tab === 'company' || tab === 'printer') await loadCompanyProfile();
+  if (tab === 'staff') await loadManagedStaff();
   if (tab === 'products') await loadManagedProducts();
   if (tab === 'contacts') await loadManagedContacts();
 }
@@ -783,6 +790,7 @@ window.addEventListener('unhandledrejection', (event) => showAlert(event.reason)
 async function openCompanyProfileSettings(tab) { showManagementTab(tab); await loadCompanyProfile(); }
 $('#show-printer-settings').addEventListener('click', () => openCompanyProfileSettings('printer').catch(showAlert));
 $('#show-company-settings').addEventListener('click', () => openCompanyProfileSettings('company').catch(showAlert));
+$('#show-staff-settings').addEventListener('click', () => openManagement('staff').catch(showAlert));
 $('#printer-connection-method').addEventListener('change', () => {
   state.config.company.printerConnectionMethod = $('#printer-connection-method').value;
   renderPrinterConnectionSettings();
@@ -794,6 +802,8 @@ $('#managed-product-search').addEventListener('submit', async (event) => { event
 $('#managed-contact-search').addEventListener('submit', async (event) => { event.preventDefault(); try { await loadManagedContacts(); } catch (error) { $('#management-message').textContent = error.message; } });
 $('#managed-product-query').addEventListener('input', () => { clearTimeout(state.managementSearchTimer); state.managementSearchTimer = setTimeout(() => loadManagedProducts().catch(showAlert), 220); });
 $('#managed-contact-query').addEventListener('input', () => { clearTimeout(state.managementSearchTimer); state.managementSearchTimer = setTimeout(() => loadManagedContacts().catch(showAlert), 220); });
+$('#managed-staff-form').addEventListener('submit', async (event) => { event.preventDefault(); try { const result = await request('/management/staff', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, actorId: state.user.id, name: $('#managed-staff-name').value, email: $('#managed-staff-email').value, roleId: $('#managed-staff-role').value, pin: $('#managed-staff-pin').value }) }); $('#managed-staff-form').reset(); $('#management-message').textContent = `${result.name} can now sign in.`; await loadManagedStaff(); showToast(`${result.name}'s staff account was created.`); } catch (error) { $('#management-message').textContent = error.message; showAlert(error); } });
+$('#managed-staff-list').addEventListener('click', async (event) => { const button = event.target.closest('[data-disable-staff]'); if (!button) return; if (!window.confirm('Disable this staff account? They will no longer be able to sign in.')) return; try { await request(`/management/staff/${encodeURIComponent(button.dataset.disableStaff)}`, { method: 'PUT', body: JSON.stringify({ companyId: state.config.company.id, actorId: state.user.id, active: false }) }); await loadManagedStaff(); showToast('Staff account disabled.'); } catch (error) { $('#management-message').textContent = error.message; showAlert(error); } });
 $('#managed-product-form').addEventListener('submit', async (event) => { event.preventDefault(); try { const quantityText = $('#managed-product-quantity').value; const purchaseText = $('#managed-product-purchase-price').value; const result = await request('/management/products', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, actorId: state.user.id, name: $('#managed-product-name').value, sku: $('#managed-product-sku').value, barcode: $('#managed-product-barcode').value || undefined, classificationCode: $('#managed-product-classification').value, supplierDescription: $('#managed-product-supplier').value || undefined, category: $('#managed-product-category').value || undefined, trackStock: $('#managed-product-track-stock').checked, locationId: selectedLocation().id, ...(quantityText !== '' ? { initialQuantity: Number(quantityText) } : {}), uoms: [{ code: 'EA', name: $('#managed-product-uom-name').value, conversionFactor: 1, salePrice: Number($('#managed-product-sale-price').value), ...(purchaseText !== '' ? { purchasePrice: Number(purchaseText) } : {}) }] }) }); $('#managed-product-form').reset(); $('#managed-product-classification').value = '022'; $('#managed-product-uom-name').value = 'Each'; $('#managed-product-track-stock').checked = true; $('#product-create-panel').classList.add('hidden'); $('#management-message').textContent = `${result.name} created as a local product.`; await loadManagedProducts(); showToast(`${result.name} was created.`); } catch (error) { $('#management-message').textContent = error.message; showAlert(error); } });
 $('#managed-product-list').addEventListener('click', async (event) => { const row = event.target.closest('[data-managed-product-id]'); if (!row) return; try { await openProductEdit(row.dataset.managedProductId); } catch (error) { showAlert(error); } });
 $('#product-edit-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await saveProductEdit(); } catch (error) { showAlert(error); } });
@@ -906,4 +916,3 @@ window.addEventListener('online', async () => {
 window.addEventListener('offline', () => { void refreshOfflineStatus(); if (state.config) showToast('Offline mode enabled. Orders will be saved on this device and synced automatically.'); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/service-worker.js').catch(() => undefined);
 void restorePersistentSession().then((restored) => { if (!restored) return restoreOfflineSessionIfNeeded(); });
-
