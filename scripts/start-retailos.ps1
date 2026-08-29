@@ -27,6 +27,24 @@ function Find-DockerCommand {
   }
 }
 
+function Find-DockerDesktop([string]$dockerPath) {
+  $candidates = @(
+    (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker Desktop.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\Docker Desktop.exe'),
+    (Join-Path $env:ProgramFiles 'Docker\Docker Desktop.exe'),
+    (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe')
+  )
+  $folder = Split-Path -Parent $dockerPath
+  for ($level = 0; $level -lt 5 -and $folder; $level += 1) {
+    $candidates += Join-Path $folder 'Docker Desktop.exe'
+    $parent = Split-Path -Parent $folder
+    if ($parent -eq $folder) { break }
+    $folder = $parent
+  }
+  return $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
 $healthUri = 'http://127.0.0.1:31081/api/health'
 try {
   $existingHealth = Invoke-RestMethod -Uri $healthUri -TimeoutSec 3
@@ -42,32 +60,23 @@ try {
   $docker = Find-DockerCommand
   if (-not $docker) { throw 'Docker Desktop command was not found for this Windows user.' }
 
-  $desktopCandidates = @(
-    (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\Docker Desktop.exe'),
-    (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe')
-  )
-  $desktop = $desktopCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-  if (-not $desktop) {
-    foreach ($root in @((Join-Path $env:LOCALAPPDATA 'Programs\Docker'), (Join-Path $env:ProgramFiles 'Docker'))) {
-      if (Test-Path -LiteralPath $root) {
-        $desktop = Get-ChildItem -LiteralPath $root -Recurse -Filter 'Docker Desktop.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-        if ($desktop) { break }
-      }
-    }
-  }
+  $desktop = Find-DockerDesktop $docker
   if ($desktop -and -not (Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue)) {
-    Write-StartupLog 'Launching Docker Desktop.'
+    Write-StartupLog "Launching Docker Desktop from $desktop."
     Start-Process -FilePath $desktop -WindowStyle Hidden
+  } elseif (-not $desktop) {
+    Write-StartupLog "Docker Desktop launcher was not found beside $docker; waiting for an existing Docker engine."
   }
 
   $compose = @('compose', '--env-file', '.env.local', '-f', 'docker-compose.yml', '-f', 'docker-compose.local.yml')
   $dockerDeadline = (Get-Date).AddMinutes(5)
   do {
-    & $docker version *> $null
-    if ($LASTEXITCODE -eq 0) { break }
+    $engineVersion = & $docker info --format '{{.ServerVersion}}' 2>$null
+    if ($LASTEXITCODE -eq 0 -and $engineVersion) { break }
     Start-Sleep -Seconds 5
   } while ((Get-Date) -lt $dockerDeadline)
-  if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop did not become ready within five minutes.' }
+  if ($LASTEXITCODE -ne 0 -or -not $engineVersion) { throw 'Docker Desktop engine did not become ready within five minutes.' }
+  Write-StartupLog "Docker engine is ready (server $engineVersion)."
 
   Write-StartupLog 'Starting RetailOS PostgreSQL container.'
   & $docker @compose up -d postgres
