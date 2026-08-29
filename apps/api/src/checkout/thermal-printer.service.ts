@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 export type PrinterTransport = 'LAN_ESC_POS' | 'WINDOWS_RAW' | 'SERIAL_ESC_POS';
+export type PrinterSettings = { lanHost?: string | null; lanPort?: number | null; windowsQueue?: string | null; serialPort?: string | null; serialBaudRate?: number | null };
 
 const execFileAsync = promisify(execFile);
 
@@ -32,24 +33,24 @@ export class ThermalPrinterService {
     this.includeLogo = config.get<string>('RETAILOS_THERMAL_PRINTER_INCLUDE_LOGO') === 'true';
   }
 
-  async print(method: string, lines: string[], paperWidthMm: number) {
+  async print(method: string, lines: string[], paperWidthMm: number, settings: PrinterSettings = {}) {
     const transport = this.transportFor(method);
     const jobId = randomUUID();
     const body = this.receiptDocument(lines, paperWidthMm);
-    const job = this.queue.catch(() => undefined).then(() => this.send(transport, body));
+    const job = this.queue.catch(() => undefined).then(() => this.send(transport, body, settings));
     this.queue = job;
     await job;
     return { jobId, transport };
   }
 
-  private async send(transport: PrinterTransport, body: Buffer) {
-    if (transport === 'LAN_ESC_POS') return this.sendLan(body);
-    if (transport === 'SERIAL_ESC_POS') return this.sendSerial(body);
-    return this.sendWindowsRaw(body);
+  private async send(transport: PrinterTransport, body: Buffer, settings: PrinterSettings) {
+    if (transport === 'LAN_ESC_POS') return this.sendLan(body, settings);
+    if (transport === 'SERIAL_ESC_POS') return this.sendSerial(body, settings);
+    return this.sendWindowsRaw(body, settings);
   }
 
-  private async sendLan(body: Buffer) {
-    const host = this.host;
+  private async sendLan(body: Buffer, settings: PrinterSettings) {
+    const host = settings.lanHost?.trim() || this.host;
     if (!host) throw new BadRequestException('LAN printing is not configured. Set RETAILOS_THERMAL_PRINTER_HOST on the PC running RetailOS.');
     if (!this.isPrivateIpv4(host)) throw new BadRequestException('The LAN thermal printer host must be a private IPv4 address.');
     await new Promise<void>((resolve, reject) => {
@@ -57,7 +58,7 @@ export class ThermalPrinterService {
       const timeout = setTimeout(() => socket.destroy(new Error('Timed out while connecting to the LAN thermal printer.')), 5000);
       const fail = (error: Error) => { clearTimeout(timeout); reject(new ServiceUnavailableException(`LAN thermal printer unavailable: ${error.message}`)); };
       socket.once('error', fail);
-      socket.connect(this.port, host, () => socket.write(body, (error) => {
+      socket.connect(this.portNumber(settings.lanPort?.toString(), this.port), host, () => socket.write(body, (error) => {
         clearTimeout(timeout);
         socket.end();
         if (error) fail(error); else resolve();
@@ -65,14 +66,14 @@ export class ThermalPrinterService {
     });
   }
 
-  private async sendSerial(body: Buffer) {
-    const port = this.serialPort;
+  private async sendSerial(body: Buffer, settings: PrinterSettings) {
+    const port = settings.serialPort?.trim() || this.serialPort;
     if (!port) throw new BadRequestException('Serial printing is not configured. Pair the Bluetooth printer to a COM port (or connect USB serial) on the PC, then set RETAILOS_THERMAL_PRINTER_SERIAL_PORT.');
     if (!this.isSafeSerialPort(port)) throw new BadRequestException('The configured serial printer port is invalid. Use COM1 through COM256 or an absolute /dev path.');
     try {
       if (process.platform === 'win32') {
         const name = port.replace(/^\\\\\.\\/i, '').toUpperCase();
-        await execFileAsync('mode.com', [`${name}:`, `BAUD=${this.serialBaudRate}`, 'PARITY=n', 'DATA=8', 'STOP=1']);
+        await execFileAsync('mode.com', [`${name}:`, `BAUD=${this.baudRate(settings.serialBaudRate?.toString(), this.serialBaudRate)}`, 'PARITY=n', 'DATA=8', 'STOP=1']);
         writeFileSync(`\\\\.\\${name}`, body, { flag: 'w' });
       } else writeFileSync(port, body, { flag: 'w' });
     } catch (error) {
@@ -80,9 +81,9 @@ export class ThermalPrinterService {
     }
   }
 
-  private async sendWindowsRaw(body: Buffer) {
+  private async sendWindowsRaw(body: Buffer, settings: PrinterSettings) {
     if (process.platform !== 'win32') throw new BadRequestException('Windows raw printing requires RetailOS API to run natively on the Windows PC, not inside Docker. Use LAN ESC/POS for Docker deployments.');
-    const printer = this.windowsPrinter;
+    const printer = settings.windowsQueue?.trim() || this.windowsPrinter;
     if (!printer) throw new BadRequestException('Windows raw printing is not configured. Set RETAILOS_THERMAL_PRINTER_WINDOWS_QUEUE to the installed printer queue name.');
     const file = join(tmpdir(), `retailos-receipt-${randomUUID()}.bin`);
     try {
@@ -167,3 +168,4 @@ public static class RetailOSRawPrinter {
   private isSafeSerialPort(value: string) { return /^COM([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-6])$/i.test(value.replace(/^\\\\\.\\/i, '')) || /^\/dev\/[A-Za-z0-9._/-]+$/.test(value); }
   private errorMessage(error: unknown) { return error instanceof Error ? error.message : String(error); }
 }
+
