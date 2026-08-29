@@ -27,12 +27,16 @@ Use this only if the automatic logon task did not start RetailOS. Open PowerShel
 `C:\Users\Lek\Documents\Codex\2026-08-26\loo\work\RetailOSSource\RetailOS-main`
 
 ```powershell
-docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml up -d postgres
-& "$env:APPDATA\npm\pnpm.cmd" build
-& "$env:APPDATA\npm\pnpm.cmd" --filter @retailos/api start
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-retailos.ps1"
 ```
 
-This uses the compiled production server. Keep that PowerShell window open while using RetailOS.
+This performs the complete production startup check and exits only after RetailOS is healthy. RetailOS continues in the background after the command finishes.
+
+The automatic logon task uses the same production sequence: it starts Docker Desktop when needed, waits for Docker and PostgreSQL, builds RetailOS, starts the compiled server, and confirms `http://127.0.0.1:31081/api/health` before succeeding. Startup diagnostics are retained at:
+
+`C:\Users\Lek\AppData\Local\RetailOS\logs\startup.log`
+
+Each application launch also has a matching `retailos-*.log` and `retailos-*.error.log` file in that folder.
 
 ## Staff accounts
 
