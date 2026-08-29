@@ -3,8 +3,11 @@
 # access RetailOS.
 services:
   postgres:
-    ports:
-      - "127.0.0.1:55432:5432"
+    # Replace the base Compose port mapping instead of adding a second mapping.
+    # This keeps the local database on 55433 and avoids a collision with an
+    # existing PostgreSQL service using Windows port 5432.
+    ports: !override
+      - "127.0.0.1:55433:5432"
   api:
     env_file:
       - .env.local
