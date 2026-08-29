@@ -4,6 +4,11 @@ param([switch]$VerifyNow)
 $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principalCheck = [System.Security.Principal.WindowsPrincipal]::new($identity)
+if (-not $principalCheck.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  throw 'Administrator PowerShell is required to install RetailOS scheduled tasks. Close this window, then open PowerShell with Run as administrator and run the same command again.'
+}
 $runAsUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $runAsUser -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
