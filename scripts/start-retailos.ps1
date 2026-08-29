@@ -104,13 +104,8 @@ try {
   & $pnpm build
   if ($LASTEXITCODE -ne 0) { throw 'RetailOS production build failed.' }
 
-  $node = (Get-Command node.exe -ErrorAction Stop).Source
-  $appDir = Join-Path $projectDir 'apps\api'
-  $stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
-  $appLog = Join-Path $logDir "retailos-$stamp.log"
-  $appErrorLog = Join-Path $logDir "retailos-$stamp.error.log"
-  Write-StartupLog "Starting compiled RetailOS server; logs: $appLog"
-  Start-Process -FilePath $node -ArgumentList @('dist\src\main.js') -WorkingDirectory $appDir -RedirectStandardOutput $appLog -RedirectStandardError $appErrorLog -WindowStyle Hidden
+  Write-StartupLog 'Starting compiled RetailOS server through its independent scheduled task.'
+  Start-ScheduledTask -TaskName 'RetailOS-Server'
 
   $appDeadline = (Get-Date).AddSeconds(60)
   do {
@@ -120,8 +115,7 @@ try {
     } catch { }
     Start-Sleep -Seconds 2
   } while ((Get-Date) -lt $appDeadline)
-  $lastError = if (Test-Path -LiteralPath $appErrorLog) { (Get-Content -LiteralPath $appErrorLog -Tail 20) -join "`n" } else { 'No application error log was created.' }
-  throw "RetailOS did not become healthy within 60 seconds. Review $appErrorLog. Last output: $lastError"
+  throw "RetailOS did not become healthy within 60 seconds. Review $logDir for the latest retailos-server error log."
 } catch {
   Write-StartupLog "FAILED: $($_.Exception.Message)"
   throw
