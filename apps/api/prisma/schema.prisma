@@ -571,3 +571,4 @@ model AuditLog {
   actor User? @relation(fields: [actorId], references: [id])
   @@index([companyId, entityType, entityId])
 }
+

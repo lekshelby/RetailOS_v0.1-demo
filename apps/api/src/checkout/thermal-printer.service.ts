@@ -168,3 +168,4 @@ public static class RetailOSRawPrinter {
   private isSafeSerialPort(value: string) { return /^COM([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-6])$/i.test(value.replace(/^\\\\\.\\/i, '')) || /^\/dev\/[A-Za-z0-9._/-]+$/.test(value); }
   private errorMessage(error: unknown) { return error instanceof Error ? error.message : String(error); }
 }
+

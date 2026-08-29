@@ -6,3 +6,4 @@ import { CheckoutModule } from '../checkout/checkout.module';
 
 @Module({ imports: [BukkuModule, CheckoutModule], controllers: [ShiftsController], providers: [ShiftsService] })
 export class ShiftsModule {}
+

@@ -319,3 +319,4 @@ export class CheckoutService {
 
   private saleInclude() { return { items: { include: { uom: true, discounts: true } }, payments: true, discounts: true, customer: true, cashier: { select: { id: true, name: true } } } as const; }
 }
+
