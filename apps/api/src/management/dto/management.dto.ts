@@ -21,6 +21,11 @@ export class UpdateCompanyProfileDto extends ManagerRequestDto {
   @IsOptional() @IsString() @ValidateIf((_object, value) => value !== '') @Length(1, 500) receiptFooter?: string;
   @IsOptional() @IsIn([58, 76, 80, 82, 110]) receiptPaperWidthMm?: number;
   @IsOptional() @IsIn(['LAN_ESC_POS', 'WINDOWS_RAW', 'SERIAL_ESC_POS', 'WINDOWS_USB', 'BLUETOOTH']) printerConnectionMethod?: string;
+  @IsOptional() @IsString() @Matches(/^(?:10|127|192\.168)\.\d{1,3}\.\d{1,3}$/) printerLanHost?: string;
+  @IsOptional() @IsNumber() @Min(1) printerLanPort?: number;
+  @IsOptional() @IsString() @Length(1, 160) printerWindowsQueue?: string;
+  @IsOptional() @IsString() @Matches(/^COM([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-6])$/i) printerSerialPort?: string;
+  @IsOptional() @IsNumber() @Min(1200) printerSerialBaudRate?: number;
 }
 
 export class CreateProductUomDto {
@@ -84,3 +89,4 @@ export class CreateManagedContactDto extends ManagerRequestDto {
   @IsOptional() @IsString() @Length(2, 2) countryCode?: string;
   @IsOptional() @IsString() @Length(1, 1000) remarks?: string;
 }
+
