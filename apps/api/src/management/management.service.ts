@@ -1,7 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { CreateManagedContactDto, CreateManagedProductDto, ManagerRequestDto, UpdateCompanyProfileDto, UpdateManagedProductDto } from './dto/management.dto';
+import { CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, ManagerRequestDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
+import { hashPin } from '../auth/pin';
 
 type ManagedProduct = Prisma.ProductGetPayload<{ include: { uoms: true; barcodes: true; prices: { include: { priceLevel: true } }; purchasePrices: true } }>;
 
@@ -43,6 +44,39 @@ export class ManagementService {
     const company = await this.db.company.update({ where: { id: input.companyId }, data });
     await this.db.auditLog.create({ data: { companyId: company.id, actorId: input.actorId, action: 'COMPANY_PROFILE_UPDATED', entityType: 'Company', entityId: company.id, after: this.profileView(company) } });
     return this.profileView(company);
+  }
+
+  async listStaff(input: ManagerRequestDto) {
+    await this.assertPermission(input, 'company.manage');
+    const [users, roles] = await Promise.all([
+      this.db.user.findMany({ where: { companyId: input.companyId }, include: { role: true }, orderBy: { name: 'asc' } }),
+      this.db.role.findMany({ where: { companyId: input.companyId }, orderBy: { name: 'asc' } }),
+    ]);
+    return { users: users.map((user) => ({ id: user.id, name: user.name, email: user.email, roleId: user.roleId, role: user.role.name, active: user.status === 'ACTIVE' })), roles: roles.map((role) => ({ id: role.id, name: role.name })) };
+  }
+
+  async createStaff(input: CreateManagedStaffDto) {
+    await this.assertPermission(input, 'company.manage');
+    const role = await this.db.role.findFirst({ where: { id: input.roleId, companyId: input.companyId } });
+    if (!role) throw new BadRequestException('Choose a valid role for this company');
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.db.user.findUnique({ where: { companyId_email: { companyId: input.companyId, email } } });
+    if (existing) throw new ConflictException('A staff account already uses this email address');
+    const user = await this.db.user.create({ data: { companyId: input.companyId, roleId: role.id, name: input.name.trim(), email, pinHash: hashPin(input.pin) } });
+    await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'STAFF_ACCOUNT_CREATED', entityType: 'User', entityId: user.id, after: { name: user.name, email: user.email, role: role.name } } });
+    return { id: user.id, name: user.name, email: user.email, role: role.name, active: true };
+  }
+
+  async updateStaff(id: string, input: UpdateManagedStaffDto) {
+    await this.assertPermission(input, 'company.manage');
+    const user = await this.db.user.findFirst({ where: { id, companyId: input.companyId } });
+    if (!user) throw new NotFoundException('Staff account was not found');
+    if (id === input.actorId && input.active === false) throw new BadRequestException('You cannot disable the account currently managing RetailOS');
+    if (input.roleId !== undefined && !await this.db.role.findFirst({ where: { id: input.roleId, companyId: input.companyId } })) throw new BadRequestException('Choose a valid role for this company');
+    const email = input.email === undefined ? undefined : input.email.trim().toLowerCase();
+    const updated = await this.db.user.update({ where: { id }, data: { ...(input.name === undefined ? {} : { name: input.name.trim() }), ...(email === undefined ? {} : { email }), ...(input.roleId === undefined ? {} : { roleId: input.roleId }), ...(input.pin === undefined ? {} : { pinHash: hashPin(input.pin) }), ...(input.active === undefined ? {} : { status: input.active ? 'ACTIVE' : 'INACTIVE' }) }, include: { role: true } });
+    await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'STAFF_ACCOUNT_UPDATED', entityType: 'User', entityId: id, after: { name: updated.name, email: updated.email, role: updated.role.name, active: updated.status === 'ACTIVE', pinChanged: input.pin !== undefined } } });
+    return { id: updated.id, name: updated.name, email: updated.email, role: updated.role.name, active: updated.status === 'ACTIVE' };
   }
 
   async listProducts(input: ManagerRequestDto, query?: string) {

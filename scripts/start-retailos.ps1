@@ -34,5 +34,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop did not become ready within fiv
 if ($LASTEXITCODE -ne 0) { throw 'RetailOS PostgreSQL could not be started.' }
 $pnpm = Join-Path $env:APPDATA 'npm\pnpm.cmd'
 if (-not (Test-Path -LiteralPath $pnpm)) { throw 'pnpm.cmd was not found in the current Windows user profile.' }
-Start-Process -FilePath $pnpm -ArgumentList 'start:dev' -WorkingDirectory $projectDir -WindowStyle Hidden
+& $pnpm build
+if ($LASTEXITCODE -ne 0) { throw 'RetailOS production build failed.' }
+Start-Process -FilePath $pnpm -ArgumentList @('--filter', '@retailos/api', 'start') -WorkingDirectory $projectDir -WindowStyle Hidden
 Pop-Location

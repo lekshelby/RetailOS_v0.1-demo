@@ -14,7 +14,7 @@ The PC is the RetailOS controller and print hub. Cashier phones use the RetailOS
 
 Only a manager with printer permission changes this in **Settings → Printer settings**.
 
-- LAN thermal printer: set the printer IP and raw TCP port. The current CP-Q6 Plus setup is `192.168.0.21` on port `9100`.
+- LAN thermal printer: set the printer IP and raw TCP port. The current CP-Q6 Plus setup is `192.168.0.200` on port `9100`.
 - Windows queue: enter the exact Windows printer queue name.
 - Serial: enter the paired COM port and baud rate.
 
@@ -28,16 +28,23 @@ Use this only if the automatic logon task did not start RetailOS. Open PowerShel
 
 ```powershell
 docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml up -d postgres
-& "$env:APPDATA\npm\pnpm.cmd" start:dev
+& "$env:APPDATA\npm\pnpm.cmd" build
+& "$env:APPDATA\npm\pnpm.cmd" --filter @retailos/api start
 ```
 
-Keep that PowerShell window open while using RetailOS.
+This uses the compiled production server. Keep that PowerShell window open while using RetailOS.
+
+## Staff accounts
+
+Sign in as a manager and open **Settings → Staff accounts**. Create and test a real manager account first, then add cashier accounts. Each PIN is entered directly into RetailOS, stored only as a secure hash, and is never displayed afterwards. Once a real manager can sign in, disable the demo accounts from the same page.
 
 ## Backups
 
-`RetailOS-Daily-Backup` creates a verified SQL backup at 9:00 PM while `Lek` is signed in. Files are stored in:
+`RetailOS-Daily-Backup` creates a verified SQL backup at 9:00 PM while `Lek` is signed in. Files are stored locally in:
 
 `C:\Users\Lek\Documents\RetailOS Backups`
+
+When OneDrive is available, the script also creates a second verified copy in `OneDrive\RetailOS Backups`.
 
 To create and verify an additional backup manually, run from the project folder:
 

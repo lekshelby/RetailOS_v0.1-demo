@@ -34,6 +34,17 @@ try {
   $header = (Get-Content -LiteralPath $partialFile -TotalCount 5) -join "`n"
   if ($header -notmatch 'PostgreSQL database dump') { throw 'Backup file did not contain a PostgreSQL SQL dump header.' }
   Move-Item -LiteralPath $partialFile -Destination $backupFile
+  $oneDriveRoot = @($env:OneDrive, $env:OneDriveCommercial) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+  if ($oneDriveRoot) {
+    $cloudDir = Join-Path $oneDriveRoot 'RetailOS Backups'
+    New-Item -ItemType Directory -Path $cloudDir -Force | Out-Null
+    $cloudFile = Join-Path $cloudDir (Split-Path -Leaf $backupFile)
+    $cloudPartial = "$cloudFile.partial"
+    Copy-Item -LiteralPath $backupFile -Destination $cloudPartial -Force
+    if ((Get-Item -LiteralPath $cloudPartial).Length -ne (Get-Item -LiteralPath $backupFile).Length) { throw 'OneDrive backup copy did not verify.' }
+    Move-Item -LiteralPath $cloudPartial -Destination $cloudFile -Force
+    Write-Output "RetailOS OneDrive backup created: $cloudFile"
+  } else { Write-Warning 'OneDrive was not available; the verified local backup was retained.' }
   Write-Output "RetailOS backup created: $backupFile"
 } finally {
   & $docker exec $containerId rm -f $insideFile 2>$null
