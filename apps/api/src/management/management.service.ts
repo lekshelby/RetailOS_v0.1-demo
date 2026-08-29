@@ -17,7 +17,7 @@ export class ManagementService {
   }
 
   async updateProfile(input: UpdateCompanyProfileDto) {
-    const printerOnly = input.receiptFooter !== undefined || input.receiptPaperWidthMm !== undefined || input.printerConnectionMethod !== undefined;
+    const printerOnly = input.receiptFooter !== undefined || input.receiptPaperWidthMm !== undefined || input.printerConnectionMethod !== undefined || input.printerLanHost !== undefined || input.printerLanPort !== undefined || input.printerWindowsQueue !== undefined || input.printerSerialPort !== undefined || input.printerSerialBaudRate !== undefined;
     const companyFields = [input.name, input.legalName, input.registrationNo, input.tin, input.brnNew, input.brnOld, input.address, input.officePhone, input.phone, input.email];
     await this.assertPermission(input, printerOnly && companyFields.every((field) => field === undefined) ? 'printer.manage' : 'company.manage');
     const data: Prisma.CompanyUpdateInput = {
@@ -32,9 +32,14 @@ export class ManagementService {
       ...(input.phone !== undefined ? { phone: input.phone.trim() || null } : {}),
       ...(input.email !== undefined ? { email: input.email.trim() || null } : {}),
       ...(input.receiptFooter !== undefined ? { receiptFooter: input.receiptFooter.trim() || null } : {}),
+      ...(input.printerLanHost !== undefined ? { printerLanHost: input.printerLanHost.trim() || null } : {}),
+      ...(input.printerWindowsQueue !== undefined ? { printerWindowsQueue: input.printerWindowsQueue.trim() || null } : {}),
+      ...(input.printerSerialPort !== undefined ? { printerSerialPort: input.printerSerialPort.trim().toUpperCase() || null } : {}),
     };
     if (input.receiptPaperWidthMm !== undefined) data.receiptPaperWidthMm = input.receiptPaperWidthMm;
     if (input.printerConnectionMethod !== undefined) data.printerConnectionMethod = input.printerConnectionMethod;
+    if (input.printerLanPort !== undefined) data.printerLanPort = input.printerLanPort;
+    if (input.printerSerialBaudRate !== undefined) data.printerSerialBaudRate = input.printerSerialBaudRate;
     const company = await this.db.company.update({ where: { id: input.companyId }, data });
     await this.db.auditLog.create({ data: { companyId: company.id, actorId: input.actorId, action: 'COMPANY_PROFILE_UPDATED', entityType: 'Company', entityId: company.id, after: this.profileView(company) } });
     return this.profileView(company);
@@ -184,7 +189,8 @@ export class ManagementService {
     return `C-${first}${String(serial).padStart(4, '0')}`;
   }
 
-  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string }) {
-    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod };
+  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string; printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number }) {
+    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod, printerLanHost: company.printerLanHost, printerLanPort: company.printerLanPort, printerWindowsQueue: company.printerWindowsQueue, printerSerialPort: company.printerSerialPort, printerSerialBaudRate: company.printerSerialBaudRate };
   }
 }
+
