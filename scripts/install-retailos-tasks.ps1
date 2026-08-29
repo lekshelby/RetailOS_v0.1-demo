@@ -33,11 +33,16 @@ if ($VerifyNow) {
   Write-Output 'Starting the RetailOS logon task now and waiting for its health check.'
   Start-ScheduledTask -TaskName 'RetailOS-Start-At-Logon'
   $deadline = (Get-Date).AddMinutes(8)
+  $nextProgress = Get-Date
   do {
     try {
       $health = Invoke-RestMethod 'http://127.0.0.1:31081/api/health' -TimeoutSec 3
       if ($health.status -eq 'ok') { Write-Output 'RetailOS scheduled startup verification passed.'; exit 0 }
     } catch { }
+    if ((Get-Date) -ge $nextProgress) {
+      Write-Output "Still waiting for RetailOS startup at $(Get-Date -Format 'HH:mm:ss')..."
+      $nextProgress = (Get-Date).AddSeconds(15)
+    }
     Start-Sleep -Seconds 3
   } while ((Get-Date) -lt $deadline)
   $logFile = Join-Path $env:LOCALAPPDATA 'RetailOS\logs\startup.log'
