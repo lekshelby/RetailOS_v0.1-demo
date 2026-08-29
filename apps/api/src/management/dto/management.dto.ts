@@ -28,6 +28,21 @@ export class UpdateCompanyProfileDto extends ManagerRequestDto {
   @IsOptional() @IsNumber() @Min(1200) printerSerialBaudRate?: number;
 }
 
+export class CreateManagedStaffDto extends ManagerRequestDto {
+  @IsString() @Length(1, 120) name!: string;
+  @IsEmail() email!: string;
+  @IsString() roleId!: string;
+  @IsString() @Length(4, 12) pin!: string;
+}
+
+export class UpdateManagedStaffDto extends ManagerRequestDto {
+  @IsOptional() @IsString() @Length(1, 120) name?: string;
+  @IsOptional() @IsEmail() email?: string;
+  @IsOptional() @IsString() roleId?: string;
+  @IsOptional() @IsString() @Length(4, 12) pin?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
 export class CreateProductUomDto {
   @IsString() @Length(1, 32) code!: string;
   @IsString() @Length(1, 80) name!: string;
@@ -89,4 +104,3 @@ export class CreateManagedContactDto extends ManagerRequestDto {
   @IsOptional() @IsString() @Length(2, 2) countryCode?: string;
   @IsOptional() @IsString() @Length(1, 1000) remarks?: string;
 }
-
