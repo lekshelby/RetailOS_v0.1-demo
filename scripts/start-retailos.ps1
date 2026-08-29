@@ -61,11 +61,15 @@ try {
   if (-not $docker) { throw 'Docker Desktop command was not found for this Windows user.' }
 
   $desktop = Find-DockerDesktop $docker
-  if ($desktop -and -not (Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue)) {
-    Write-StartupLog "Launching Docker Desktop from $desktop."
-    Start-Process -FilePath $desktop -WindowStyle Hidden
-  } elseif (-not $desktop) {
-    Write-StartupLog "Docker Desktop launcher was not found beside $docker; waiting for an existing Docker engine."
+  if (-not (Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue)) {
+    Write-StartupLog 'Requesting Docker Desktop startup through the Docker Desktop CLI.'
+    & $docker desktop start --detach *> $null
+    if ($LASTEXITCODE -ne 0 -and $desktop) {
+      Write-StartupLog "Docker Desktop CLI start was unavailable; launching $desktop directly."
+      Start-Process -FilePath $desktop
+    } elseif ($LASTEXITCODE -ne 0) {
+      Write-StartupLog "Docker Desktop launcher was not found beside $docker; waiting for an existing Docker engine."
+    }
   }
 
   $compose = @('compose', '--env-file', '.env.local', '-f', 'docker-compose.yml', '-f', 'docker-compose.local.yml')
