@@ -1,4 +1,4 @@
-const state = { config: null, user: null, sessionToken: null, approvalTokens: {}, cart: [], saleDiscount: null, exchangeCredit: null, exchangeItems: [], exchangeRefundPreference: null, searchResults: [], recentItems: [], exchangeSearchResults: [], receiptHistory: [], discountTarget: null, voidSale: null, editingProduct: null, shift: null, returnSale: null, scannerStream: null, scannerActive: false, searchTimer: null, managementSearchTimer: null, alertTimer: null, toastTimer: null, catalogue: [], catalogueSavedAt: null, replayingOfflineSales: false, language: localStorage.getItem('retailos-language') || 'en' };
+const state = { config: null, user: null, sessionToken: null, approvalTokens: {}, cart: [], saleDiscount: null, exchangeCredit: null, exchangeItems: [], exchangeRefundPreference: null, searchResults: [], recentItems: [], exchangeSearchResults: [], receiptHistory: [], discountTarget: null, voidSale: null, editingProduct: null, shift: null, returnSale: null, scannerStream: null, scannerActive: false, searchTimer: null, searchEpoch: 0, managementSearchTimer: null, alertTimer: null, toastTimer: null, syncProgressTimer: null, catalogue: [], catalogueSavedAt: null, replayingOfflineSales: false, language: localStorage.getItem('retailos-language') || 'en' };
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => `RM${Number(value || 0).toFixed(2)}`;
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
@@ -22,6 +22,17 @@ function showToast(message) {
   $('#app-toast-text').textContent = message; $('#app-toast').classList.remove('hidden');
   clearTimeout(state.toastTimer); state.toastTimer = setTimeout(() => $('#app-toast').classList.add('hidden'), 4500);
 }
+function setSyncProgress(percent, label) {
+  const button = $('#sync-now'); if (!button) return;
+  button.textContent = `Sync ${percent}%${label ? ` · ${label}` : ''}`;
+  button.setAttribute('aria-label', `Sync progress ${percent} percent${label ? `: ${label}` : ''}`);
+}
+function startSyncProgress() {
+  clearInterval(state.syncProgressTimer); let percent = 10;
+  setSyncProgress(percent, 'starting');
+  state.syncProgressTimer = setInterval(() => { percent = Math.min(65, percent + 5); setSyncProgress(percent, 'syncing Bukku'); }, 1000);
+}
+function finishSyncProgress() { clearInterval(state.syncProgressTimer); state.syncProgressTimer = null; setTimeout(() => { const button = $('#sync-now'); if (button) { button.textContent = languageText[state.language]?.sync || 'Sync now'; button.removeAttribute('aria-label'); } }, 900); }
 function reveal(element) { element.classList.remove('hidden'); }
 function mirrorErrorMessage(selector, isSuccess = () => false) {
   const element = $(selector);
@@ -30,6 +41,15 @@ function mirrorErrorMessage(selector, isSuccess = () => false) {
 mirrorErrorMessage('#login-message');
 mirrorErrorMessage('#checkout-message', (text) => text.startsWith('Recovered your saved cart') || text.startsWith('Exchange replacement cancelled'));
 mirrorErrorMessage('#management-message', (text) => /saved\.$|created as a local (product|contact)\.$/.test(text));
+function makeMessageDismissible(selector) {
+  const message = $(selector); if (!message || message.parentElement?.classList.contains('message-with-dismiss')) return;
+  const wrapper = document.createElement('div'); wrapper.className = 'message-with-dismiss hidden';
+  message.before(wrapper); wrapper.append(message);
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'message-dismiss'; dismiss.setAttribute('aria-label', 'Dismiss message'); dismiss.textContent = '×';
+  dismiss.addEventListener('click', () => { message.textContent = ''; }); wrapper.append(dismiss);
+  new MutationObserver(() => wrapper.classList.toggle('hidden', !message.textContent.trim())).observe(message, { childList: true, characterData: true, subtree: true });
+}
+['#login-message', '#checkout-message', '#management-message', '#split-error'].forEach(makeMessageDismissible);
 
 async function request(path, options = {}) {
   const { sessionToken, approvalToken, headers: optionHeaders, ...fetchOptions } = options;
@@ -48,10 +68,21 @@ function persistCart() { const key = cartStorageKey(); if (!key) return; if (!st
 function restoreCart() { const key = cartStorageKey(); if (!key) return false; try { const saved = JSON.parse(localStorage.getItem(key) || 'null'); if (!Array.isArray(saved?.cart) || !saved.cart.length) return false; state.cart = saved.cart; return true; } catch (_) { localStorage.removeItem(key); return false; } }
 function clearSavedCart() { const key = cartStorageKey(); if (key) localStorage.removeItem(key); }
 function offlineSessionKey() { return 'retailos-offline-session'; }
+function persistentSessionKey() { return 'retailos-session'; }
 function catalogueKey() { return state.config && selectedLocation() && selectedPriceLevel() ? `${state.config.company.id}:${selectedLocation().id}:${selectedPriceLevel().id}` : null; }
 function isNetworkIssue(error) { return !navigator.onLine || error instanceof TypeError || /network|fetch|failed to fetch|load failed/i.test(String(error?.message || error)); }
 function offlineId() { return typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `offline-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function saveOfflineSession() { if (!state.config || !state.user) return; sessionStorage.setItem(offlineSessionKey(), JSON.stringify({ config: state.config, user: state.user, shift: state.shift, savedAt: new Date().toISOString() })); }
+function savePersistentSession() {
+  if (!state.config || !state.user || !state.sessionToken) return;
+  localStorage.setItem(persistentSessionKey(), JSON.stringify({ config: state.config, user: state.user, sessionToken: state.sessionToken, shift: state.shift, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 }));
+}
+function clearPersistentSession() { localStorage.removeItem(persistentSessionKey()); sessionStorage.removeItem(offlineSessionKey()); }
+function closeItemSearch(clearInput = true) {
+  state.searchEpoch += 1; clearTimeout(state.searchTimer); state.searchResults = []; $('#search-results').innerHTML = '';
+  if (clearInput) $('#lookup-query').value = '';
+  $('#lookup-query').blur();
+}
 function updateConnectionStatus(pendingCount = null, needsReviewCount = 0) {
   const status = $('#connection-status'); if (!status) return;
   const pending = pendingCount == null ? 0 : pendingCount;
@@ -267,14 +298,14 @@ async function applyDiscountFromDialog() {
   state.discountTarget = null; $('#discount-dialog').classList.add('hidden'); renderCart(); showToast('Discount approved and applied.');
 }
 
-async function search() {
+async function search(epoch = state.searchEpoch) {
   const query = $('#lookup-query').value.trim();
   if (!query) { state.searchResults = []; $('#search-results').innerHTML = ''; return; }
   const location = selectedLocation(); const priceLevel = selectedPriceLevel();
   try {
     if (!navigator.onLine) throw new TypeError('Offline');
     const products = await request(`/products/lookup?companyId=${encodeURIComponent(state.config.company.id)}&query=${encodeURIComponent(query)}&priceLevelId=${encodeURIComponent(priceLevel.id)}&locationId=${encodeURIComponent(location.id)}`);
-    if ($('#lookup-query').value.trim() !== query) return;
+    if (epoch !== state.searchEpoch || $('#lookup-query').value.trim() !== query) return;
     const addable = products.map((product) => {
       const availableUoms = product.uoms.map((uom) => { const price = product.prices.find((value) => value.uomId === uom.id); return price ? { uom, unitPrice: Number(price.amount) } : null; }).filter(Boolean);
       const first = availableUoms[0]; const stock = product.stockSnapshots[0] ? Number(product.stockSnapshots[0].quantity) : null;
@@ -283,7 +314,7 @@ async function search() {
     renderSearchResults(addable);
   } catch (error) {
     if (!isNetworkIssue(error) || !state.catalogue.length) throw error;
-    if ($('#lookup-query').value.trim() !== query) return;
+    if (epoch !== state.searchEpoch || $('#lookup-query').value.trim() !== query) return;
     renderSearchResults(searchCachedCatalogue(query), 'Offline results from the last saved catalogue.');
   }
 }
@@ -702,17 +733,17 @@ async function openManagement(tab = 'products') {
   if (tab === 'contacts') await loadManagedContacts();
 }
 
-$('#sign-in').addEventListener('click', async () => { try { $('#login-message').textContent = ''; const code = $('#company-code').value.trim(); state.config = await request(`/pos/bootstrap?companyCode=${encodeURIComponent(code)}`); const login = await request('/auth/pin', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, pin: $('#cashier-pin').value }) }); state.user = login.user; state.sessionToken = login.sessionToken; $('#login-view').classList.add('hidden'); $('#pos-view').classList.remove('hidden'); renderConfig(); const recovered = restoreCart(); renderCart(); if (recovered) $('#checkout-message').textContent = 'Recovered your saved cart. Prices and stock will be checked again at checkout.'; await loadCurrentShift(); saveOfflineSession(); await loadOfflineCatalogue(); await refreshOfflineStatus(); void cacheCatalogue().catch(() => undefined); void replayOfflineSales(); } catch (error) { $('#login-message').textContent = error.message; } });
-$('#sign-out').addEventListener('click', () => { sessionStorage.removeItem(offlineSessionKey()); window.location.reload(); });
+$('#sign-in').addEventListener('click', async () => { try { $('#login-message').textContent = ''; const code = $('#company-code').value.trim(); state.config = await request(`/pos/bootstrap?companyCode=${encodeURIComponent(code)}`); const login = await request('/auth/pin', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, pin: $('#cashier-pin').value }) }); state.user = login.user; state.sessionToken = login.sessionToken; $('#login-view').classList.add('hidden'); $('#pos-view').classList.remove('hidden'); renderConfig(); const recovered = restoreCart(); renderCart(); if (recovered) $('#checkout-message').textContent = 'Recovered your saved cart. Prices and stock will be checked again at checkout.'; await loadCurrentShift(); saveOfflineSession(); savePersistentSession(); await loadOfflineCatalogue(); await refreshOfflineStatus(); void cacheCatalogue().catch(() => undefined); void replayOfflineSales(); } catch (error) { $('#login-message').textContent = error.message; } });
+$('#sign-out').addEventListener('click', () => { clearPersistentSession(); window.location.reload(); });
 $('#language-select').addEventListener('change', () => { state.language = $('#language-select').value; localStorage.setItem('retailos-language', state.language); applyLanguage(); renderCart(); renderRecentItems(); });
-$('#nav-dashboard').addEventListener('click', () => { $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); window.scrollTo({ top: 0, behavior: 'smooth' }); $('#lookup-query').focus(); });
-$('#nav-receipts').addEventListener('click', async () => { try { $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); reveal($('#receipt-panel')); await loadReceiptHistory(); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
-$('#nav-products').addEventListener('click', async () => { try { $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('products'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
-$('#nav-contacts').addEventListener('click', async () => { try { $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('contacts'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
-$('#nav-company').addEventListener('click', async () => { try { await openManagement('settings'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-dashboard').addEventListener('click', () => { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); window.scrollTo({ top: 0, behavior: 'smooth' }); $('#lookup-query').focus(); });
+$('#nav-receipts').addEventListener('click', async () => { try { closeItemSearch(); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); reveal($('#receipt-panel')); await loadReceiptHistory(); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-products').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('products'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-contacts').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('contacts'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-company').addEventListener('click', async () => { try { closeItemSearch(); await openManagement('settings'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
 $('#hide-receipt').addEventListener('click', () => $('#receipt-panel').classList.add('hidden'));
 $('#hide-receipt-dialog').addEventListener('click', () => $('#receipt-dialog').classList.add('hidden'));
-$('#open-cart').addEventListener('click', () => { $('#cart-panel').classList.add('cart-open'); });
+$('#open-cart').addEventListener('click', () => { closeItemSearch(); $('#cart-panel').classList.add('cart-open'); });
 $('#hide-cart').addEventListener('click', () => { $('#cart-panel').classList.remove('cart-open'); });
 $('#hide-management').addEventListener('click', () => { $('#management-panel').classList.add('hidden'); $('#add-product-float').classList.add('hidden'); $('#add-contact-float').classList.add('hidden'); });
 $('#add-product-float').addEventListener('click', () => reveal($('#product-create-panel')));
@@ -768,11 +799,11 @@ $('#return-sale').addEventListener('change', (event) => { if (event.target.id ==
 $('#return-sale').addEventListener('click', async (event) => { if (event.target.id !== 'complete-return') return; try { await completeReturn(); } catch (error) { $('#checkout-message').textContent = error.message; } });
 $('#return-sale').addEventListener('click', (event) => { const add = event.target.closest('[data-exchange-product-index]'); if (add) { const item = state.exchangeSearchResults[Number(add.dataset.exchangeProductIndex)]; state.exchangeItems.push({ productId: item.id, name: item.name, uom: item.uom, unitPrice: item.unitPrice, availableUoms: item.availableUoms, quantity: 1 }); renderExchangeItems(); return; } const remove = event.target.closest('[data-remove-exchange-item]'); if (remove) { state.exchangeItems.splice(Number(remove.dataset.removeExchangeItem), 1); renderExchangeItems(); } });
 $('#shift-action').addEventListener('click', async () => { try { await operateShift(); } catch (error) { $('#checkout-message').textContent = error.message; } });
-$('#sync-now').addEventListener('click', async () => { try { if (!navigator.onLine) throw new Error('Sync now needs an internet connection. Offline sales remain safely queued.'); $('#sync-now').disabled = true; $('#sync-now').textContent = 'Syncing…'; const result = await request('/sync/now', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, actorId: state.user.id }) }); await cacheCatalogue(); await replayOfflineSales(); showToast(result.skipped ? result.reason : result.products.notChanged ? 'Bukku and the offline catalogue are already up to date.' : `Bukku sync completed and the local catalogue was refreshed.`); } catch (error) { showAlert(error); } finally { $('#sync-now').disabled = false; $('#sync-now').textContent = 'Sync now'; } });
+$('#sync-now').addEventListener('click', async () => { try { if (!navigator.onLine) throw new Error('Sync now needs an internet connection. Offline sales remain safely queued.'); $('#sync-now').disabled = true; startSyncProgress(); const result = await request('/sync/now', { method: 'POST', body: JSON.stringify({ companyId: state.config.company.id, actorId: state.user.id }) }); clearInterval(state.syncProgressTimer); setSyncProgress(75, 'saving catalogue'); await cacheCatalogue(); setSyncProgress(90, 'checking queued sales'); await replayOfflineSales(); setSyncProgress(100, 'complete'); showToast(result.skipped ? result.reason : result.products.notChanged ? 'Bukku and the offline catalogue are already up to date.' : `Bukku sync completed and the local catalogue was refreshed.`); } catch (error) { clearInterval(state.syncProgressTimer); setSyncProgress(0, 'failed'); showAlert(error); } finally { $('#sync-now').disabled = false; finishSyncProgress(); } });
 $('#cash-movement').addEventListener('click', async () => { try { await addCashMovement(); } catch (error) { $('#checkout-message').textContent = error.message; } });
 $('#shift-report').addEventListener('click', async () => { try { await showShiftReport(); } catch (error) { $('#checkout-message').textContent = error.message; } });
-$('#lookup-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await search(); } catch (error) { $('#checkout-message').textContent = error.message; } });
-$('#lookup-query').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => search().catch((error) => { $('#checkout-message').textContent = error.message; showAlert(error); }), 220); });
+$('#lookup-form').addEventListener('submit', async (event) => { event.preventDefault(); try { state.searchEpoch += 1; await search(state.searchEpoch); } catch (error) { $('#checkout-message').textContent = error.message; } });
+$('#lookup-query').addEventListener('input', () => { state.searchEpoch += 1; const epoch = state.searchEpoch; clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => search(epoch).catch((error) => { $('#checkout-message').textContent = error.message; showAlert(error); }), 220); });
 $('#start-barcode-scan').addEventListener('click', async () => { try { await startBarcodeScanner(); } catch (error) { $('#checkout-message').textContent = error.message; } });
 $('#stop-barcode-scan').addEventListener('click', stopBarcodeScanner);
 $('#search-results').addEventListener('click', async (event) => { const adjustment = event.target.closest('[data-adjust-index]'); if (adjustment) { try { await adjustStock(state.searchResults[Number(adjustment.dataset.adjustIndex)]); } catch (error) { $('#checkout-message').textContent = error.message; } return; } const button = event.target.closest('[data-product-index]'); if (button) addProduct(state.searchResults[Number(button.dataset.productIndex)]); });
@@ -820,6 +851,25 @@ async function restoreOfflineSessionIfNeeded() {
   } catch (_) { /* A normal PIN sign-in remains available when the connection returns. */ }
 }
 
+async function restorePersistentSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(persistentSessionKey()) || 'null');
+    if (!saved?.config || !saved?.user || !saved?.sessionToken || !saved?.expiresAt || saved.expiresAt < Date.now()) { localStorage.removeItem(persistentSessionKey()); return false; }
+    if (!navigator.onLine) return false;
+    await request('/auth/session', { sessionToken: saved.sessionToken });
+    state.config = await request(`/pos/bootstrap?companyCode=${encodeURIComponent(saved.config.company.code)}`, { sessionToken: saved.sessionToken });
+    state.user = saved.user; state.sessionToken = saved.sessionToken; state.shift = saved.shift || null;
+    $('#login-view').classList.add('hidden'); $('#pos-view').classList.remove('hidden'); renderConfig();
+    const recovered = restoreCart(); renderCart(); await loadCurrentShift(); saveOfflineSession(); savePersistentSession(); await loadOfflineCatalogue(); await refreshOfflineStatus();
+    void cacheCatalogue().catch(() => undefined); void replayOfflineSales();
+    showToast(recovered ? 'Your 7-day cashier session was restored. Your saved cart is ready.' : 'Your 7-day cashier session was restored.');
+    return true;
+  } catch (error) {
+    if (!isNetworkIssue(error)) clearPersistentSession();
+    return false;
+  }
+}
+
 window.addEventListener('online', async () => {
   await refreshOfflineStatus();
   if (!state.config) return;
@@ -828,4 +878,4 @@ window.addEventListener('online', async () => {
 });
 window.addEventListener('offline', () => { void refreshOfflineStatus(); if (state.config) showToast('Offline mode enabled. Orders will be saved on this device and synced automatically.'); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/service-worker.js').catch(() => undefined);
-void restoreOfflineSessionIfNeeded();
+void restorePersistentSession().then((restored) => { if (!restored) return restoreOfflineSessionIfNeeded(); });
