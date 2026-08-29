@@ -87,7 +87,7 @@ export class CheckoutService {
     ]);
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
     if (!sale || !actor || !permissions.includes('checkout')) throw new NotFoundException('Receipt or cashier was not found');
-    const printJob = await this.thermalPrinter.print(sale.company.printerConnectionMethod, this.receiptLines(sale), sale.company.receiptPaperWidthMm);
+    const printJob = await this.thermalPrinter.print(sale.company.printerConnectionMethod, this.receiptLines(sale), sale.company.receiptPaperWidthMm, this.printerSettings(sale.company));
     const printedAt = new Date();
     await this.db.$transaction([
       this.db.sale.update({ where: { id: sale.id }, data: { printedAt } }),
@@ -103,7 +103,7 @@ export class CheckoutService {
     ]);
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
     if (!company || !actor || !permissions.includes('printer.manage')) throw new NotFoundException('Printer settings access is required');
-    const printJob = await this.thermalPrinter.print(company.printerConnectionMethod, [company.legalName || company.name, 'RetailOS printer test', new Date().toLocaleString('en-MY'), '--------------------------------', `Paper: ${company.receiptPaperWidthMm} mm`, `Transport: ${company.printerConnectionMethod}`, 'If this is readable, the PC print hub is ready.', '--------------------------------', 'Thank you'], company.receiptPaperWidthMm);
+    const printJob = await this.thermalPrinter.print(company.printerConnectionMethod, [company.legalName || company.name, 'RetailOS printer test', new Date().toLocaleString('en-MY'), '--------------------------------', `Paper: ${company.receiptPaperWidthMm} mm`, `Transport: ${company.printerConnectionMethod}`, 'If this is readable, the PC print hub is ready.', '--------------------------------', 'Thank you'], company.receiptPaperWidthMm, this.printerSettings(company));
     await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: actor.id, action: 'PRINTER_TEST_PRINTED', entityType: 'Printer', after: { transport: printJob.transport, printJobId: printJob.jobId } } });
     return { message: 'Test receipt sent to the PC printer queue.', transport: printJob.transport, printJobId: printJob.jobId };
   }
@@ -112,6 +112,10 @@ export class CheckoutService {
     const sale = await this.db.sale.findFirst({ where: { receiptNo, companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true } }, payments: true } });
     if (!sale) throw new NotFoundException('Receipt was not found');
     return this.simpleReceiptPdf(this.receiptLines(sale));
+  }
+
+  private printerSettings(company: { printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number }) {
+    return { lanHost: company.printerLanHost, lanPort: company.printerLanPort, windowsQueue: company.printerWindowsQueue, serialPort: company.printerSerialPort, serialBaudRate: company.printerSerialBaudRate };
   }
 
   private receiptLines(sale: { company: { name: string; legalName: string | null; brnNew: string | null; registrationNo: string | null; brnOld: string | null; tin: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string }; location: { name: string }; register: { name: string }; receiptNo: string; completedAt: Date | null; cashier: { name: string }; items: Array<{ description: string; quantity: Prisma.Decimal; uom: { name: string }; unitPrice: Prisma.Decimal; lineTotal: Prisma.Decimal }>; payments: Array<{ method: string; amount: Prisma.Decimal; tenderedAmount: Prisma.Decimal; changeAmount: Prisma.Decimal }>; subtotal: Prisma.Decimal; discountTotal: Prisma.Decimal; grandTotal: Prisma.Decimal }) {

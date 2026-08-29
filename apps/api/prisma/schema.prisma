@@ -98,6 +98,11 @@ model Company {
   receiptFooter String?
   receiptPaperWidthMm Int @default(80)
   printerConnectionMethod String @default("LAN_ESC_POS")
+  printerLanHost String?
+  printerLanPort Int @default(9100)
+  printerWindowsQueue String?
+  printerSerialPort String?
+  printerSerialBaudRate Int @default(9600)
   bukkuProductVersion String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

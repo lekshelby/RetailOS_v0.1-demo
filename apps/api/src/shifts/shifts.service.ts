@@ -4,10 +4,11 @@ import { PrismaService } from '../database/prisma.service';
 import { reconcileCash } from './shift-calculator';
 import { CashMovementDto, CloseShiftDto, OpenShiftDto } from './dto/shift.dto';
 import { BukkuAutoSyncService } from '../integrations/bukku/bukku-auto-sync.service';
+import { ThermalPrinterService } from '../checkout/thermal-printer.service';
 
 @Injectable()
 export class ShiftsService {
-  constructor(private readonly db: PrismaService, private readonly bukkuSync: BukkuAutoSyncService) {}
+  constructor(private readonly db: PrismaService, private readonly bukkuSync: BukkuAutoSyncService, private readonly thermalPrinter: ThermalPrinterService) {}
 
   async open(input: OpenShiftDto) {
     const [location, register, cashier] = await Promise.all([
@@ -28,6 +29,14 @@ export class ShiftsService {
     const shift = await this.db.shift.findFirst({ where: { registerId, closedAt: null, location: { companyId } }, orderBy: { openedAt: 'desc' } });
     if (!shift) throw new NotFoundException('No open shift for this register');
     return this.status(shift.id, companyId);
+  }
+
+  async history(companyId: string, actorId: string, registerId?: string) {
+    const actor = await this.db.user.findFirst({ where: { id: actorId, companyId, status: 'ACTIVE' }, include: { role: true } });
+    const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
+    if (!actor || !permissions.includes('shift.report.view')) throw new NotFoundException('Manager access is required for shift reports');
+    const shifts = await this.db.shift.findMany({ where: { closedAt: { not: null }, location: { companyId }, ...(registerId ? { registerId } : {}) }, include: { location: true, register: true, cashier: { select: { name: true } } }, orderBy: { closedAt: 'desc' }, take: 100 });
+    return shifts.map((shift) => ({ id: shift.id, location: shift.location.name, register: shift.register.name, cashier: shift.cashier.name, openedAt: shift.openedAt, closedAt: shift.closedAt, openingFloat: Number(shift.openingFloat), closingFloat: shift.closingFloat == null ? null : Number(shift.closingFloat) }));
   }
 
   async report(shiftId: string, companyId: string, actorId: string) {
@@ -55,6 +64,39 @@ export class ShiftsService {
     };
   }
 
+  async printReport(shiftId: string, companyId: string, actorId: string) {
+    const [report, company] = await Promise.all([
+      this.report(shiftId, companyId, actorId),
+      this.db.company.findUnique({ where: { id: companyId } }),
+    ]);
+    if (!company) throw new NotFoundException('Company was not found');
+    const lines = [
+      company.legalName || company.name,
+      'SHIFT REPORT',
+      `${report.shift.location} · ${report.shift.register}`,
+      `Cashier: ${report.shift.cashier}`,
+      `Opened: ${new Date(report.shift.openedAt).toLocaleString('en-MY')}`,
+      report.shift.closedAt ? `Closed: ${new Date(report.shift.closedAt).toLocaleString('en-MY')}` : 'OPEN SHIFT',
+      '--------------------------------',
+      `Sales: ${report.summary.salesCount}  Gross: RM${report.summary.grossSales.toFixed(2)}`,
+      `Discounts: RM${report.summary.discountTotal.toFixed(2)}`,
+      `Cash sales: RM${report.summary.cashSales.toFixed(2)}`,
+      `Cash refunds: RM${report.summary.cashRefunds.toFixed(2)}`,
+      `Cash in: RM${report.summary.cashIn.toFixed(2)}`,
+      `Cash out: RM${report.summary.cashOut.toFixed(2)}`,
+      `Expected cash: RM${report.summary.expectedCash.toFixed(2)}`,
+      ...(report.summary.variance === undefined ? [] : [`Variance: RM${report.summary.variance.toFixed(2)}`]),
+      '--------------------------------',
+      ...Object.entries(report.paymentTotals).map(([method, amount]) => `${method}: RM${amount.toFixed(2)}`),
+      `Returns: ${report.returns.length}`,
+      report.negativeStock.length ? `Stock follow-up: ${report.negativeStock.length} item(s)` : 'Stock follow-up: none',
+      'RetailOS shift close record',
+    ];
+    const printJob = await this.thermalPrinter.print(company.printerConnectionMethod, lines, company.receiptPaperWidthMm, { lanHost: company.printerLanHost, lanPort: company.printerLanPort, windowsQueue: company.printerWindowsQueue, serialPort: company.printerSerialPort, serialBaudRate: company.printerSerialBaudRate });
+    await this.db.auditLog.create({ data: { companyId, actorId, action: 'SHIFT_REPORT_PRINTED', entityType: 'Shift', entityId: shiftId, after: { transport: printJob.transport, printJobId: printJob.jobId } } });
+    return { message: 'Shift report sent to the PC printer.', ...printJob };
+  }
+
   async addMovement(shiftId: string, input: CashMovementDto) {
     const shift = await this.requireActiveShift(shiftId, input.companyId, input.cashierId);
     const movement = await this.db.cashMovement.create({ data: { shiftId: shift.id, type: input.type, amount: input.amount, reason: input.reason.trim() } });
@@ -70,9 +112,17 @@ export class ShiftsService {
     const summary = await this.summary(shift.id);
     const reconciliation = reconcileCash({ ...summary, countedCash: input.closingFloat });
     const negativeStock = await this.negativeStockForShift(shift.id, shift.locationId);
-    await this.db.shift.update({ where: { id: shift.id }, data: { closingFloat: input.closingFloat, closedAt: new Date() } });
+    const closedAt = new Date();
+    await this.db.shift.update({ where: { id: shift.id }, data: { closingFloat: input.closingFloat, closedAt } });
     await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'SHIFT_CLOSED', entityType: 'Shift', entityId: shift.id, after: { ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock }, metadata: { approvedById: manager.id } } });
-    return { shiftId: shift.id, closedAt: new Date(), ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock };
+    try {
+      const print = await this.printReport(shift.id, input.companyId, manager.id);
+      return { shiftId: shift.id, closedAt, ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, reportPrint: print };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown printer error';
+      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: manager.id, action: 'SHIFT_REPORT_AUTO_PRINT_FAILED', entityType: 'Shift', entityId: shift.id, after: { message } } });
+      return { shiftId: shift.id, closedAt, ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, reportPrintError: message };
+    }
   }
 
   private async requireActiveShift(shiftId: string, companyId: string, cashierId: string) {
