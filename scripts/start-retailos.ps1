@@ -70,12 +70,17 @@ try {
 
   $compose = @('compose', '--env-file', '.env.local', '-f', 'docker-compose.yml', '-f', 'docker-compose.local.yml')
   $dockerDeadline = (Get-Date).AddMinutes(5)
+  $engineReady = $false
+  $enginePipe = '\\.\pipe\dockerDesktopLinuxEngine'
+  Write-StartupLog 'Waiting for the Docker Desktop engine pipe and server version.'
   do {
-    $engineVersion = & $docker info --format '{{.ServerVersion}}' 2>$null
-    if ($LASTEXITCODE -eq 0 -and $engineVersion) { break }
+    if (Test-Path -LiteralPath $enginePipe) {
+      $engineVersion = ((& $docker info --format '{{.ServerVersion}}' 2>$null) | Out-String).Trim()
+      if ($LASTEXITCODE -eq 0 -and $engineVersion -match '^\d+(\.\d+){1,3}([+-].*)?$') { $engineReady = $true; break }
+    }
     Start-Sleep -Seconds 5
   } while ((Get-Date) -lt $dockerDeadline)
-  if ($LASTEXITCODE -ne 0 -or -not $engineVersion) { throw 'Docker Desktop engine did not become ready within five minutes.' }
+  if (-not $engineReady) { throw 'Docker Desktop engine did not become ready within five minutes.' }
   Write-StartupLog "Docker engine is ready (server $engineVersion)."
 
   Write-StartupLog 'Starting RetailOS PostgreSQL container.'
