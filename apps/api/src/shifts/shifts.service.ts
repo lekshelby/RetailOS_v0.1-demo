@@ -84,6 +84,7 @@ export class ShiftsService {
       `Cash refunds: RM${report.summary.cashRefunds.toFixed(2)}`,
       `Cash in: RM${report.summary.cashIn.toFixed(2)}`,
       `Cash out: RM${report.summary.cashOut.toFixed(2)}`,
+      `Opening float: RM${report.summary.openingFloat.toFixed(2)}`,
       `Expected cash: RM${report.summary.expectedCash.toFixed(2)}`,
       ...(report.summary.variance === undefined ? [] : [`Variance: RM${report.summary.variance.toFixed(2)}`]),
       '--------------------------------',
