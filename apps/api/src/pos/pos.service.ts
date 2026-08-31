@@ -16,7 +16,7 @@ export class PosService {
     });
     if (!company) throw new NotFoundException('Company was not found');
     return {
-      company: { id: company.id, code: company.code, name: company.name, currency: company.currency, printerConnectionMethod: company.printerConnectionMethod },
+      company: { id: company.id, code: company.code, name: company.name, currency: company.currency, printerConnectionMethod: company.printerConnectionMethod, customerEInvoiceRequestsEnabled: company.customerEInvoiceRequestsEnabled },
       locations: company.locations,
       priceLevels: company.priceLevels,
       pricing: {

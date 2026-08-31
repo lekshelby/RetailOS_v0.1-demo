@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsNumber, IsOptional, IsString, Length, Matches, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsNumber, IsObject, IsOptional, IsString, Length, Matches, Min, ValidateIf, ValidateNested } from 'class-validator';
 
 export class ManagerRequestDto {
   @IsString() companyId!: string;
@@ -26,6 +26,13 @@ export class UpdateCompanyProfileDto extends ManagerRequestDto {
   @IsOptional() @IsString() @Length(1, 160) printerWindowsQueue?: string;
   @IsOptional() @IsString() @Matches(/^COM([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-6])$/i) printerSerialPort?: string;
   @IsOptional() @IsNumber() @Min(1200) printerSerialBaudRate?: number;
+  @IsOptional() @IsBoolean() customerEInvoiceRequestsEnabled?: boolean;
+  @IsOptional() @IsBoolean() bukkuDailyInvoiceEnabled?: boolean;
+  @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceContactId?: string;
+  @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceLocationId?: string;
+  @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceRevenueAccountId?: string;
+  @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceTaxCodeId?: string;
+  @IsOptional() @IsObject() bukkuDailyInvoicePaymentAccounts?: Record<string, string>;
 }
 
 export class CreateManagedStaffDto extends ManagerRequestDto {

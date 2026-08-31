@@ -7,6 +7,7 @@ export class ManagementController {
   constructor(private readonly management: ManagementService) {}
   @Get('company') company(@Query() input: ManagerRequestDto) { return this.management.profile(input); }
   @Put('company') updateCompany(@Body() input: UpdateCompanyProfileDto) { return this.management.updateProfile(input); }
+  @Get('bukku/daily-invoice-preview') previewBukkuDailyInvoice(@Query('shiftId') shiftId: string, @Query() input: ManagerRequestDto) { return this.management.previewBukkuDailyInvoice(shiftId, input); }
   @Get('staff') staff(@Query() input: ManagerRequestDto) { return this.management.listStaff(input); }
   @Post('staff') createStaff(@Body() input: CreateManagedStaffDto) { return this.management.createStaff(input); }
   @Put('staff/:id') updateStaff(@Param('id') id: string, @Body() input: UpdateManagedStaffDto) { return this.management.updateStaff(id, input); }

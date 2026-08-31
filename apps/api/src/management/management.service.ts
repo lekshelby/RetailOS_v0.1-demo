@@ -36,6 +36,13 @@ export class ManagementService {
       ...(input.printerLanHost !== undefined ? { printerLanHost: input.printerLanHost.trim() || null } : {}),
       ...(input.printerWindowsQueue !== undefined ? { printerWindowsQueue: input.printerWindowsQueue.trim() || null } : {}),
       ...(input.printerSerialPort !== undefined ? { printerSerialPort: input.printerSerialPort.trim().toUpperCase() || null } : {}),
+      ...(input.customerEInvoiceRequestsEnabled !== undefined ? { customerEInvoiceRequestsEnabled: input.customerEInvoiceRequestsEnabled } : {}),
+      ...(input.bukkuDailyInvoiceEnabled !== undefined ? { bukkuDailyInvoiceEnabled: input.bukkuDailyInvoiceEnabled } : {}),
+      ...(input.bukkuDailyInvoiceContactId !== undefined ? { bukkuDailyInvoiceContactId: input.bukkuDailyInvoiceContactId.trim() || null } : {}),
+      ...(input.bukkuDailyInvoiceLocationId !== undefined ? { bukkuDailyInvoiceLocationId: input.bukkuDailyInvoiceLocationId.trim() || null } : {}),
+      ...(input.bukkuDailyInvoiceRevenueAccountId !== undefined ? { bukkuDailyInvoiceRevenueAccountId: input.bukkuDailyInvoiceRevenueAccountId.trim() || null } : {}),
+      ...(input.bukkuDailyInvoiceTaxCodeId !== undefined ? { bukkuDailyInvoiceTaxCodeId: input.bukkuDailyInvoiceTaxCodeId.trim() || null } : {}),
+      ...(input.bukkuDailyInvoicePaymentAccounts !== undefined ? { bukkuDailyInvoicePaymentAccounts: input.bukkuDailyInvoicePaymentAccounts } : {}),
     };
     if (input.receiptPaperWidthMm !== undefined) data.receiptPaperWidthMm = input.receiptPaperWidthMm;
     if (input.printerConnectionMethod !== undefined) data.printerConnectionMethod = input.printerConnectionMethod;
@@ -44,6 +51,36 @@ export class ManagementService {
     const company = await this.db.company.update({ where: { id: input.companyId }, data });
     await this.db.auditLog.create({ data: { companyId: company.id, actorId: input.actorId, action: 'COMPANY_PROFILE_UPDATED', entityType: 'Company', entityId: company.id, after: this.profileView(company) } });
     return this.profileView(company);
+  }
+
+  async previewBukkuDailyInvoice(shiftId: string, input: ManagerRequestDto) {
+    await this.assertPermission(input, 'company.manage');
+    if (!shiftId) throw new BadRequestException('Choose a closed shift to preview');
+    const [company, shift] = await Promise.all([
+      this.db.company.findUnique({ where: { id: input.companyId } }),
+      this.db.shift.findFirst({ where: { id: shiftId, closedAt: { not: null }, location: { companyId: input.companyId } }, include: { location: { select: { name: true } }, register: { select: { name: true } }, sales: { where: { status: 'COMPLETED' }, orderBy: { completedAt: 'asc' }, include: { payments: { where: { status: 'COMPLETED' }, select: { method: true, amount: true, changeAmount: true } }, items: { include: { product: { select: { sku: true, name: true } }, uom: { select: { code: true, name: true } } } } } } } }),
+    ]);
+    if (!company) throw new NotFoundException('Company was not found');
+    if (!shift) throw new NotFoundException('Closed shift was not found');
+    const paymentAccounts = this.stringRecord(company.bukkuDailyInvoicePaymentAccounts);
+    const paymentTotals: Record<string, number> = {};
+    const groupedItems = new Map<string, { sku: string; description: string; uom: string; quantity: number; subtotal: number; discount: number; tax: number; total: number }>();
+    let subtotal = 0; let discountTotal = 0; let taxTotal = 0; let grandTotal = 0;
+    for (const sale of shift.sales) {
+      subtotal += Number(sale.subtotal); discountTotal += Number(sale.discountTotal); taxTotal += Number(sale.taxTotal); grandTotal += Number(sale.grandTotal);
+      for (const payment of sale.payments) paymentTotals[payment.method] = (paymentTotals[payment.method] ?? 0) + Number(payment.amount) - Number(payment.changeAmount);
+      for (const item of sale.items) {
+        const key = `${item.productId}:${item.uomId}`;
+        const row = groupedItems.get(key) ?? { sku: item.product.sku, description: item.description || item.product.name, uom: item.uom.code || item.uom.name, quantity: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
+        row.quantity += Number(item.quantity); row.subtotal += Number(item.quantity) * Number(item.unitPrice); row.discount += Number(item.lineDiscount); row.tax += Number(item.taxAmount); row.total += Number(item.lineTotal);
+        groupedItems.set(key, row);
+      }
+    }
+    const required = [['Enable daily invoice preview', company.bukkuDailyInvoiceEnabled], ['Bukku cash-sales contact ID', company.bukkuDailyInvoiceContactId], ['Bukku revenue account ID', company.bukkuDailyInvoiceRevenueAccountId], ['Bukku tax code ID', company.bukkuDailyInvoiceTaxCodeId]] as const;
+    const missing: string[] = required.filter(([, value]) => !value).map(([label]) => label);
+    for (const method of Object.keys(paymentTotals)) if (!paymentAccounts[method]) missing.push(`Bukku payment account ID for ${method}`);
+    const businessDate = (shift.closedAt ?? new Date()).toISOString().slice(0, 10);
+    return { previewOnly: true, notice: 'Preview only. RetailOS has not created or posted an invoice in Bukku.', mapping: { enabled: company.bukkuDailyInvoiceEnabled, contactId: company.bukkuDailyInvoiceContactId, locationId: company.bukkuDailyInvoiceLocationId, revenueAccountId: company.bukkuDailyInvoiceRevenueAccountId, taxCodeId: company.bukkuDailyInvoiceTaxCodeId, paymentAccounts, complete: missing.length === 0, missing }, invoice: { idempotencyKey: `bukku:shift-daily-digest:${shift.id}`, businessDate, reference: `RetailOS closed shift ${shift.id}`, location: { retailosName: shift.location.name, bukkuId: company.bukkuDailyInvoiceLocationId }, register: shift.register.name, salesCount: shift.sales.length, subtotal: this.roundMoney(subtotal), discountTotal: this.roundMoney(discountTotal), taxTotal: this.roundMoney(taxTotal), total: this.roundMoney(grandTotal), paymentTotals: Object.entries(paymentTotals).map(([method, amount]) => ({ method, amount: this.roundMoney(amount), bukkuAccountId: paymentAccounts[method] ?? null })), lines: [...groupedItems.values()].map((row) => ({ ...row, quantity: Number(row.quantity.toFixed(4)), subtotal: this.roundMoney(row.subtotal), discount: this.roundMoney(row.discount), tax: this.roundMoney(row.tax), total: this.roundMoney(row.total) })) } };
   }
 
   async listStaff(input: ManagerRequestDto) {
@@ -223,7 +260,16 @@ export class ManagementService {
     return `C-${first}${String(serial).padStart(4, '0')}`;
   }
 
-  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string; printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number }) {
-    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod, printerLanHost: company.printerLanHost, printerLanPort: company.printerLanPort, printerWindowsQueue: company.printerWindowsQueue, printerSerialPort: company.printerSerialPort, printerSerialBaudRate: company.printerSerialBaudRate };
+  private stringRecord(value: Prisma.JsonValue | null): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const result: Record<string, string> = {};
+    for (const [method, accountId] of Object.entries(value)) if (typeof accountId === 'string' && accountId.trim()) result[method] = accountId.trim();
+    return result;
+  }
+
+  private roundMoney(value: number) { return Number(value.toFixed(2)); }
+
+  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string; printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number; customerEInvoiceRequestsEnabled: boolean; bukkuDailyInvoiceEnabled: boolean; bukkuDailyInvoiceContactId: string | null; bukkuDailyInvoiceLocationId: string | null; bukkuDailyInvoiceRevenueAccountId: string | null; bukkuDailyInvoiceTaxCodeId: string | null; bukkuDailyInvoicePaymentAccounts: Prisma.JsonValue | null }) {
+    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod, printerLanHost: company.printerLanHost, printerLanPort: company.printerLanPort, printerWindowsQueue: company.printerWindowsQueue, printerSerialPort: company.printerSerialPort, printerSerialBaudRate: company.printerSerialBaudRate, customerEInvoiceRequestsEnabled: company.customerEInvoiceRequestsEnabled, bukkuDailyInvoiceEnabled: company.bukkuDailyInvoiceEnabled, bukkuDailyInvoiceContactId: company.bukkuDailyInvoiceContactId, bukkuDailyInvoiceLocationId: company.bukkuDailyInvoiceLocationId, bukkuDailyInvoiceRevenueAccountId: company.bukkuDailyInvoiceRevenueAccountId, bukkuDailyInvoiceTaxCodeId: company.bukkuDailyInvoiceTaxCodeId, bukkuDailyInvoicePaymentAccounts: company.bukkuDailyInvoicePaymentAccounts };
   }
 }

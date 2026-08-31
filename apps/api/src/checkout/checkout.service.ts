@@ -200,7 +200,7 @@ export class CheckoutService {
       cashierId: input.cashierId, customerId: input.customerId, priceLevelId: input.priceLevelId,
       shiftId: input.shiftId, receiptNo, status: 'COMPLETED', subtotal: totals.subtotal,
       discountTotal: totals.discountTotal, taxTotal: 0, grandTotal: totals.grandTotal,
-      offlineId: input.offlineId, deviceId: input.deviceId, completedAt: now, eInvoiceRequestToken: EInvoiceController.token(),
+      offlineId: input.offlineId, deviceId: input.deviceId, completedAt: now, eInvoiceRequestToken: company.customerEInvoiceRequestsEnabled ? EInvoiceController.token() : null,
     }});
     if (exchangeReturn) await tx.return.update({ where: { id: exchangeReturn.id }, data: { replacementSaleId: sale.id } });
 

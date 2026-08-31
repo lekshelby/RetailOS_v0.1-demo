@@ -103,6 +103,13 @@ model Company {
   printerWindowsQueue String?
   printerSerialPort String?
   printerSerialBaudRate Int @default(9600)
+  customerEInvoiceRequestsEnabled Boolean @default(true)
+  bukkuDailyInvoiceEnabled Boolean @default(false)
+  bukkuDailyInvoiceContactId String?
+  bukkuDailyInvoiceLocationId String?
+  bukkuDailyInvoiceRevenueAccountId String?
+  bukkuDailyInvoiceTaxCodeId String?
+  bukkuDailyInvoicePaymentAccounts Json?
   bukkuProductVersion String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

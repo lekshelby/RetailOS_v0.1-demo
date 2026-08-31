@@ -100,6 +100,32 @@ try {
 
   $pnpm = Join-Path $env:APPDATA 'npm\pnpm.cmd'
   if (-not (Test-Path -LiteralPath $pnpm)) { throw 'pnpm.cmd was not found in the current Windows user profile.' }
+  $prisma = Join-Path $projectDir 'apps\api\node_modules\.bin\prisma.cmd'
+  if (-not (Test-Path -LiteralPath $prisma)) { throw 'RetailOS Prisma command was not found. Run pnpm install from the RetailOS project folder first.' }
+  Write-StartupLog 'Generating the RetailOS database client.'
+  & $pnpm db:generate
+  if ($LASTEXITCODE -ne 0) { throw 'RetailOS database client generation failed.' }
+
+  $databaseLine = Get-Content -LiteralPath (Join-Path $projectDir '.env.local') | Where-Object { $_ -match '^DATABASE_URL=' } | Select-Object -First 1
+  if (-not $databaseLine) { throw 'DATABASE_URL was not found in .env.local.' }
+  $containerDatabaseUrl = $databaseLine.Substring('DATABASE_URL='.Length)
+  if ($containerDatabaseUrl -match '@postgres:5432/') {
+    $hostDatabaseUrl = $containerDatabaseUrl -replace '@postgres:5432/', '@127.0.0.1:55433/'
+  } elseif ($containerDatabaseUrl -match '@(?:127\.0\.0\.1|localhost):55433/') {
+    $hostDatabaseUrl = $containerDatabaseUrl
+  } else {
+    throw 'DATABASE_URL must use either postgres:5432 or the local Docker address 127.0.0.1:55433 for the RetailOS migration.'
+  }
+  $previousDatabaseUrl = $env:DATABASE_URL
+  try {
+    $env:DATABASE_URL = $hostDatabaseUrl
+    Write-StartupLog 'Applying verified RetailOS database migrations.'
+    & $prisma migrate deploy --schema (Join-Path $projectDir 'apps\api\prisma\schema.prisma')
+    if ($LASTEXITCODE -ne 0) { throw 'RetailOS database migration failed.' }
+  } finally {
+    $env:DATABASE_URL = $previousDatabaseUrl
+  }
+
   Write-StartupLog 'Building RetailOS production server.'
   & $pnpm build
   if ($LASTEXITCODE -ne 0) { throw 'RetailOS production build failed.' }
