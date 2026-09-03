@@ -30,4 +30,21 @@ describe('Bukku connector boundary', () => {
     await expect(listAdapter.pullProductCatalogue('catalogue-v1')).resolves.toEqual({ notChanged: true, version: undefined, products: [] });
     expect(post).toHaveBeenCalledWith('/v2/lists', { lists: ['product_list'], params: { product_list: { version: 'catalogue-v1' } } });
   });
+
+  it('creates an idempotent Normal daily cash invoice with split payment accounts', async () => {
+    const get = jest.fn().mockResolvedValue({ transactions: [] });
+    const post = jest.fn().mockResolvedValue({ transaction: { id: 901 } });
+    const invoiceAdapter = new BukkuAdapter({ get, post } as never);
+    await expect(invoiceAdapter.pushDailyCashInvoice({ number: 'ROS-20260901-ABC123', businessDate: '2026-09-01', contactId: '35', currency: 'MYR', locationId: '1', lines: [{ productId: '100', productUnitId: '101', incomeAccountId: '20', description: 'Pipe', quantity: 2, unitPrice: 5, classificationCode: '022' }], payments: [{ accountId: '2', paymentMethodId: '3', amount: 6 }, { accountId: '3', paymentMethodId: '1', amount: 4 }] }, 'bukku:shift-daily-digest:test')).resolves.toMatchObject({ externalId: '901' });
+    expect(post).toHaveBeenCalledWith('/sales/invoices', expect.objectContaining({ payment_mode: 'cash', contact_id: 35, number: 'ROS-20260901-ABC123', myinvois_action: 'NORMAL', status: 'ready', deposit_items: [{ account_id: 2, payment_method_id: 3, amount: 6 }, { account_id: 3, payment_method_id: 1, amount: 4 }] }));
+  });
+
+  it('does not add a Bukku tax code when the RetailOS mapping is intentionally blank', async () => {
+    const get = jest.fn().mockResolvedValue({ transactions: [] });
+    const post = jest.fn().mockResolvedValue({ transaction: { id: 902 } });
+    const invoiceAdapter = new BukkuAdapter({ get, post } as never);
+    await invoiceAdapter.pushDailyCashInvoice({ number: 'ROS-20260901-NOTAX', businessDate: '2026-09-01', contactId: '35', currency: 'MYR', lines: [{ productId: '100', productUnitId: '101', incomeAccountId: '20', description: 'Pipe', quantity: 1, unitPrice: 5, classificationCode: '022' }], payments: [{ accountId: '2', paymentMethodId: '3', amount: 5 }] }, 'bukku:shift-daily-digest:notax');
+    const body = post.mock.calls[0][1];
+    expect(body.form_items[0]).not.toHaveProperty('tax_code_id');
+  });
 });

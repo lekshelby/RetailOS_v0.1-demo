@@ -1,10 +1,14 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { calculateCheckout, settlePayments } from './checkout-calculator';
+import { calculateCheckout, receiptHistoryPaymentAmount, settlePayments } from './checkout-calculator';
+import { aggregateStockRequests } from './stock-control';
 import { CheckoutDto, MarkReceiptPrintedDto, VoidSaleDto } from './dto/checkout.dto';
 import { EInvoiceController } from '../einvoice/einvoice.controller';
 import { ThermalPrinterService } from './thermal-printer.service';
+import { canonicalReceipt, receiptLines } from './receipt-renderer';
+import { latestInventoryCost, recordInventoryLedger, setSaleItemCost } from '../inventory/inventory-ledger';
+import { allocateFifoSale, assertFifoStockInvariant } from '../inventory/fifo';
 
 @Injectable()
 export class CheckoutService {
@@ -25,7 +29,7 @@ export class CheckoutService {
       total: Number(sale.grandTotal),
       completedAt: sale.completedAt,
       cashier: sale.cashier.name,
-      payments: sale.payments.map((payment) => ({ method: payment.method, amount: Number(payment.amount) - Number(payment.changeAmount) })),
+      payments: sale.payments.map((payment) => ({ method: payment.method, amount: receiptHistoryPaymentAmount({ method: payment.method, amount: Number(payment.amount), changeAmount: Number(payment.changeAmount) }) })),
     }));
   }
 
@@ -46,17 +50,31 @@ export class CheckoutService {
         tx.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
       ]);
       const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
-      if (!actor || !permissions.includes('sale.void')) throw new NotFoundException('Manager approval is required to void a receipt');
+      if (!actor || !permissions.includes('sale.void')) throw new ForbiddenException('Manager approval is required to void a receipt');
       if (!sale) throw new NotFoundException('Receipt was not found');
       if (sale.status !== 'COMPLETED') throw new BadRequestException('Only completed receipts can be voided');
       if (sale.returns.length) throw new BadRequestException('This receipt already has a return. Use the return workflow instead of voiding it.');
+      const restored = new Map<string, { item: typeof sale.items[number]; quantity: Prisma.Decimal; value: Prisma.Decimal | null }>();
       for (const item of sale.items) {
         if (!item.product.trackStock) continue;
-        await tx.stockSnapshot.upsert({
-          where: { locationId_productId: { locationId: sale.locationId, productId: item.productId } },
-          update: { quantity: { increment: item.baseQuantity }, capturedAt: new Date() },
-          create: { locationId: sale.locationId, productId: item.productId, quantity: item.baseQuantity },
-        });
+        const current = restored.get(item.productId);
+        const costedItem = item as typeof item & { unitCost: Prisma.Decimal | null };
+        const itemValue = costedItem.unitCost == null ? null : new Prisma.Decimal(costedItem.unitCost).mul(item.baseQuantity);
+        if (current) { current.quantity = current.quantity.add(item.baseQuantity); current.value = current.value == null || itemValue == null ? null : current.value.add(itemValue); }
+        else restored.set(item.productId, { item, quantity: item.baseQuantity, value: itemValue });
+      }
+      for (const [productId, restore] of restored) {
+        const before = await tx.stockSnapshot.findUnique({ where: { locationId_productId: { locationId: sale.locationId, productId } } });
+        const pre = before?.quantity ?? new Prisma.Decimal(0);
+        const post = pre.add(restore.quantity);
+        await tx.stockSnapshot.upsert({ where: { locationId_productId: { locationId: sale.locationId, productId } }, update: { quantity: post, capturedAt: new Date() }, create: { locationId: sale.locationId, productId, quantity: post } });
+        const latest = await latestInventoryCost(tx, input.companyId, sale.locationId, productId);
+        const costedItem = restore.item as typeof restore.item & { unitCost: Prisma.Decimal | null };
+        const unitCost = costedItem.unitCost ?? latest?.averageUnitCost ?? restore.item.product.basePurchaseCost;
+        const valueDelta = restore.value ?? (unitCost == null ? null : restore.quantity.mul(unitCost));
+        const priorValue = latest?.runningValue ?? (unitCost == null ? null : pre.mul(unitCost));
+        const status = unitCost == null ? 'UNVALUED' : post.lessThan(0) || !latest ? 'PROVISIONAL' : latest.costStatus;
+        await recordInventoryLedger(tx, { companyId: input.companyId, locationId: sale.locationId, productId, saleItemId: restore.item.id, actorId: actor.id, type: 'VOID', quantityDelta: restore.quantity, unitCost, valueDelta, runningQuantity: post, runningValue: priorValue == null || valueDelta == null ? null : priorValue.add(valueDelta), averageUnitCost: unitCost, costStatus: status, referenceType: 'VOID', referenceId: sale.id, reason });
       }
       await tx.sale.update({ where: { id: sale.id }, data: { status: 'VOIDED' } });
       await tx.payment.updateMany({ where: { saleId: sale.id }, data: { status: 'REFUNDED' } });
@@ -69,9 +87,11 @@ export class CheckoutService {
   async markReceiptPrinted(receiptNo: string, input: MarkReceiptPrintedDto) {
     const [sale, actor] = await Promise.all([
       this.db.sale.findFirst({ where: { receiptNo, companyId: input.companyId } }),
-      this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' } }),
+      this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
     ]);
-    if (!sale || !actor) throw new NotFoundException('Receipt or cashier was not found');
+    if (!sale) throw new NotFoundException('Receipt was not found');
+    const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
+    if (!actor || !permissions.includes('checkout')) throw new ForbiddenException('Receipt printing permission is required');
     const printedAt = new Date();
     await this.db.$transaction([
       this.db.sale.update({ where: { id: sale.id }, data: { printedAt } }),
@@ -82,18 +102,36 @@ export class CheckoutService {
 
   async printThermalReceipt(receiptNo: string, input: MarkReceiptPrintedDto) {
     const [sale, actor] = await Promise.all([
-      this.db.sale.findFirst({ where: { receiptNo, companyId: input.companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true } }, payments: true } }),
+      this.db.sale.findFirst({ where: { receiptNo, companyId: input.companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true, product: { select: { sku: true } } } }, payments: true } }),
       this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
     ]);
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
-    if (!sale || !actor || !permissions.includes('checkout')) throw new NotFoundException('Receipt or cashier was not found');
-    const printJob = await this.thermalPrinter.print(sale.company.printerConnectionMethod, this.receiptLines(sale), sale.company.receiptPaperWidthMm, this.printerSettings(sale.company));
-    const printedAt = new Date();
-    await this.db.$transaction([
-      this.db.sale.update({ where: { id: sale.id }, data: { printedAt } }),
-      this.db.auditLog.create({ data: { companyId: input.companyId, actorId: actor.id, action: 'RECEIPT_PRINTED_THERMAL', entityType: 'Sale', entityId: sale.id, after: { receiptNo, printedAt, transport: printJob.transport, printJobId: printJob.jobId } } }),
-    ]);
-    return { receiptNo, printedAt, transport: printJob.transport, printJobId: printJob.jobId };
+    if (!sale) throw new NotFoundException('Receipt was not found');
+    if (!actor || !permissions.includes('checkout')) throw new ForbiddenException('Receipt printing permission is required');
+    if (sale.status !== 'COMPLETED' && sale.status !== 'VOIDED') throw new BadRequestException('Only a committed receipt can be printed.');
+    const job = await this.db.printJob.create({ data: { companyId: input.companyId, saleId: sale.id, printerProfile: sale.company.printerProfileName, transport: sale.company.printerConnectionMethod, kind: 'RECEIPT', reprint: Boolean(sale.printedAt), createdById: actor.id } });
+    try {
+      await this.db.printJob.update({ where: { id: job.id }, data: { status: 'SENDING', sendingAt: new Date(), attempts: { increment: 1 } } });
+      let printJob;
+      const document = canonicalReceipt(sale, sale.status === 'VOIDED' ? 'VOID' : job.reprint ? 'REPRINT' : 'ORIGINAL');
+      try { printJob = await this.thermalPrinter.print(sale.company.printerConnectionMethod, receiptLines(document), document.widthMm, { ...this.printerSettings(sale.company), includeLogo: document.showLogo }); }
+      catch (error) {
+        if (!sale.company.printerFallbackMethod) throw error;
+        printJob = await this.thermalPrinter.print(sale.company.printerFallbackMethod, receiptLines(document), document.widthMm, { ...this.printerSettings(sale.company), includeLogo: document.showLogo, lanHost: sale.company.printerFallbackLanHost, lanPort: sale.company.printerFallbackLanPort ?? undefined });
+      }
+      const printedAt = new Date();
+      await this.db.$transaction([
+        this.db.sale.update({ where: { id: sale.id }, data: { printedAt } }),
+        this.db.printJob.update({ where: { id: job.id }, data: { status: 'PRINTED', printedAt, lastError: null, transport: printJob.transport } }),
+        this.db.auditLog.create({ data: { companyId: input.companyId, actorId: actor.id, action: 'RECEIPT_PRINTED_THERMAL', entityType: 'Sale', entityId: sale.id, after: { receiptNo, printedAt, transport: printJob.transport, printJobId: job.id, reprint: job.reprint } } }),
+      ]);
+      return { receiptNo, printedAt, transport: printJob.transport, printJobId: job.id, status: 'PRINTED' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.db.printJob.update({ where: { id: job.id }, data: { status: 'FAILED', failedAt: new Date(), lastError: message } });
+      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: actor.id, action: 'RECEIPT_PRINT_FAILED', entityType: 'Sale', entityId: sale.id, after: { receiptNo, printJobId: job.id, error: message } } });
+      throw error;
+    }
   }
 
   async testThermalPrinter(input: MarkReceiptPrintedDto) {
@@ -102,59 +140,70 @@ export class CheckoutService {
       this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
     ]);
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
-    if (!company || !actor || !permissions.includes('printer.manage')) throw new NotFoundException('Printer settings access is required');
-    const printJob = await this.thermalPrinter.print(company.printerConnectionMethod, [company.legalName || company.name, 'RetailOS printer test', new Date().toLocaleString('en-MY'), '--------------------------------', `Paper: ${company.receiptPaperWidthMm} mm`, `Transport: ${company.printerConnectionMethod}`, 'If this is readable, the PC print hub is ready.', '--------------------------------', 'Thank you'], company.receiptPaperWidthMm, this.printerSettings(company));
+    if (!company) throw new NotFoundException('Company was not found');
+    if (!actor || !permissions.includes('printer.manage')) throw new ForbiddenException('Printer settings access is required');
+    const printJob = await this.thermalPrinter.print(company.printerConnectionMethod, [company.legalName || company.name, 'RetailOS printer test', '打印机中文测试', new Date().toLocaleString('en-MY'), '--------------------------------', `Paper: ${company.receiptPaperWidthMm} mm`, `Transport: ${company.printerConnectionMethod}`, 'BOLD / barcode / QR capability test', 'If this is readable, the PC print hub is ready.', '--------------------------------', 'Thank you / 谢谢'], company.receiptPaperWidthMm, this.printerSettings(company));
     await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: actor.id, action: 'PRINTER_TEST_PRINTED', entityType: 'Printer', after: { transport: printJob.transport, printJobId: printJob.jobId } } });
     return { message: 'Test receipt sent to the PC printer queue.', transport: printJob.transport, printJobId: printJob.jobId };
   }
 
+  async printerHealth(input: MarkReceiptPrintedDto) {
+    const [company, actor] = await Promise.all([
+      this.db.company.findUnique({ where: { id: input.companyId } }),
+      this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
+    ]);
+    const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
+    if (!company) throw new NotFoundException('Company was not found');
+    if (!actor || !permissions.includes('printer.manage')) throw new ForbiddenException('Printer settings access is required');
+    const health = await this.thermalPrinter.health(company.printerConnectionMethod, this.printerSettings(company));
+    const lastPrint = await this.db.auditLog.findFirst({ where: { companyId: input.companyId, action: { in: ['RECEIPT_PRINTED_THERMAL', 'PRINTER_TEST_PRINTED'] } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    return { profileName: company.printerProfileName, ...health, lastSuccessfulPrint: lastPrint?.createdAt ?? null };
+  }
+
   async receiptPdf(receiptNo: string, companyId: string) {
-    const sale = await this.db.sale.findFirst({ where: { receiptNo, companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true } }, payments: true } });
+    const sale = await this.db.sale.findFirst({ where: { receiptNo, companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true, product: { select: { sku: true } } } }, payments: true } });
     if (!sale) throw new NotFoundException('Receipt was not found');
-    return this.simpleReceiptPdf(this.receiptLines(sale));
+    return this.simpleReceiptPdf(receiptLines(canonicalReceipt(sale, sale.status === 'VOIDED' ? 'VOID' : sale.printedAt ? 'REPRINT' : 'ORIGINAL')));
+  }
+
+  async receiptDocument(receiptNo: string, companyId: string) {
+    const sale = await this.db.sale.findFirst({ where: { receiptNo, companyId }, include: { company: true, location: true, register: true, cashier: { select: { name: true } }, items: { include: { uom: true, product: { select: { sku: true } } } }, payments: true } });
+    if (!sale) throw new NotFoundException('Receipt was not found');
+    return { ...canonicalReceipt(sale, sale.status === 'VOIDED' ? 'VOID' : sale.printedAt ? 'REPRINT' : 'ORIGINAL'), lines: receiptLines(canonicalReceipt(sale, sale.status === 'VOIDED' ? 'VOID' : sale.printedAt ? 'REPRINT' : 'ORIGINAL')) };
   }
 
   private printerSettings(company: { printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number }) {
     return { lanHost: company.printerLanHost, lanPort: company.printerLanPort, windowsQueue: company.printerWindowsQueue, serialPort: company.printerSerialPort, serialBaudRate: company.printerSerialBaudRate };
   }
 
-  private receiptLines(sale: { company: { name: string; legalName: string | null; brnNew: string | null; registrationNo: string | null; brnOld: string | null; tin: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string }; location: { name: string }; register: { name: string }; receiptNo: string; completedAt: Date | null; cashier: { name: string }; items: Array<{ description: string; quantity: Prisma.Decimal; uom: { name: string }; unitPrice: Prisma.Decimal; lineTotal: Prisma.Decimal }>; payments: Array<{ method: string; amount: Prisma.Decimal; tenderedAmount: Prisma.Decimal; changeAmount: Prisma.Decimal }>; subtotal: Prisma.Decimal; discountTotal: Prisma.Decimal; grandTotal: Prisma.Decimal }) {
-    const moneyText = (value: Prisma.Decimal | number) => `RM${Number(value).toFixed(2)}`;
-    return [
-      sale.company.legalName || sale.company.name,
-      sale.company.brnNew || sale.company.registrationNo ? `BRN: ${sale.company.brnNew || sale.company.registrationNo}${sale.company.brnOld ? ` (${sale.company.brnOld})` : ''}` : '',
-      sale.company.tin ? `TIN: ${sale.company.tin}` : '',
-      `Receipt No: ${sale.receiptNo}`,
-      sale.completedAt?.toLocaleString('en-MY') || '',
-      '--------------------------------',
-      ...sale.items.flatMap((item) => [`${item.description}`, `${Number(item.quantity)} ${item.uom.name} x ${moneyText(item.unitPrice)}   ${moneyText(item.lineTotal)}`]),
-      '--------------------------------',
-      this.receiptTotalLine('Subtotal', moneyText(sale.subtotal)),
-      this.receiptTotalLine('Discount', `-${moneyText(sale.discountTotal)}`),
-      this.receiptTotalLine('Total', moneyText(sale.grandTotal)),
-      ...sale.payments.flatMap((payment) => payment.method === 'CASH' ? [`Cash Received: ${moneyText(payment.tenderedAmount)}`, ...(Number(payment.changeAmount) ? [`Balance: ${moneyText(payment.changeAmount)}`] : [])] : [`${payment.method.replaceAll('_', ' ')}: ${moneyText(payment.amount)}`]),
-      sale.company.officePhone ? `Office No.: ${sale.company.officePhone}` : '',
-      sale.company.phone ? `Phone No.: ${sale.company.phone}` : '',
-      sale.company.email ? `Email: ${sale.company.email}` : '',
-      'Returns, refunds and exchanges: until end of next working day only.',
-      'Operating hours: Mon-Sat, 8:30 AM-5:00 PM',
-      sale.company.receiptFooter || 'Thank you for shopping with us!',
-    ].filter(Boolean);
-  }
-
-  private receiptTotalLine(label: string, amount: string) { return `${label}${' '.repeat(Math.max(1, 42 - label.length - amount.length))}${amount}`; }
-
   private async complete(tx: Prisma.TransactionClient, input: CheckoutDto) {
     const [company, location, register, cashier, priceLevel] = await Promise.all([
       tx.company.findUnique({ where: { id: input.companyId } }),
       tx.location.findFirst({ where: { id: input.locationId, companyId: input.companyId } }),
       tx.register.findFirst({ where: { id: input.registerId, locationId: input.locationId } }),
-      tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' } }),
+      tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
       tx.priceLevel.findFirst({ where: { id: input.priceLevelId, companyId: input.companyId } }),
     ]);
     if (!company || !location || !register || !cashier || !priceLevel) throw new BadRequestException('Invalid company, location, register, cashier, or price level');
+    const cashierPermissions = Array.isArray(cashier.role.permissions) ? cashier.role.permissions : [];
+    if (!cashierPermissions.includes('checkout')) throw new ForbiddenException('Checkout permission is required');
     if (input.customerId && !await tx.customer.findFirst({ where: { id: input.customerId, companyId: input.companyId } })) throw new BadRequestException('Customer does not belong to this company');
-    if (input.shiftId && !await tx.shift.findFirst({ where: { id: input.shiftId, registerId: input.registerId, cashierId: input.cashierId, closedAt: null } })) throw new BadRequestException('Shift is not open for this cashier and register');
+    // This check deliberately happens inside the same serializable transaction as
+    // the sale, payment, receipt and inventory writes.  A client-provided shift ID
+    // is never enough: it must be the open shift for this exact company, location,
+    // register and cashier.
+    const activeShift = await tx.shift.findFirst({
+      where: {
+        id: input.shiftId,
+        locationId: input.locationId,
+        registerId: input.registerId,
+        cashierId: input.cashierId,
+        closedAt: null,
+        location: { companyId: input.companyId },
+      },
+      select: { id: true },
+    });
+    if (!activeShift) throw new BadRequestException('Open a shift before checkout. The selected shift is not open for this cashier and register.');
     const exchangeReturn = input.exchangeReturnId ? await tx.return.findFirst({ where: { id: input.exchangeReturnId, companyId: input.companyId, type: 'EXCHANGE', status: 'COMPLETED', replacementSaleId: null }, include: { storeCredit: true } }) : null;
     if (input.exchangeReturnId && !exchangeReturn?.storeCredit) throw new BadRequestException('Exchange credit is unavailable for this replacement sale');
     if (exchangeReturn && !input.payments.some((payment) => payment.storeCreditId === exchangeReturn.storeCredit?.id)) throw new BadRequestException('Replacement sale must apply the exchange store credit');
@@ -169,11 +218,11 @@ export class CheckoutService {
       const uom = product.uoms.find((value) => value.id === item.uomId);
       const price = product.prices.find((value) => value.uomId === item.uomId);
       if (!uom || !price) throw new BadRequestException(`UOM or price is missing for ${product.name}`);
-      return { product, uom, quantity: item.quantity, unitPrice: Number(price.amount), discount: item.discount };
+      return { product, uom, quantity: item.quantity, unitPrice: Number(price.amount), discount: item.discount, fifoOverride: item.fifoOverride };
     });
     for (const item of priced) {
-      if (!item.discount) continue;
-      if (this.requiresDiscountApproval({ ...item, discount: item.discount })) await this.assertApproval(item.discount, input.companyId, tx);
+      if (item.discount && this.requiresDiscountApproval({ ...item, discount: item.discount })) await this.assertApproval(item.discount, input.companyId, tx);
+      if (item.fifoOverride) await this.assertFifoOverride(item.fifoOverride, input.companyId, tx);
     }
     const totals = calculateCheckout(priced, input.saleDiscount);
     const payments = settlePayments(input.payments, totals.grandTotalCents);
@@ -195,41 +244,80 @@ export class CheckoutService {
     } else if (input.exchangeRefund) throw new BadRequestException('Exchange refund requires an exchange return');
     const receiptNo = await this.nextReceiptNo(tx, location.id, location.code, company.timezone);
     const now = new Date();
+    const stockRequests = aggregateStockRequests(priced.map((item) => ({
+      productId: item.product.id,
+      productName: item.product.name,
+      sku: item.product.sku,
+      trackStock: item.product.trackStock,
+      baseQuantity: new Prisma.Decimal(String(item.quantity)).mul(item.uom.conversionFactor),
+    })));
+    const costByProduct = new Map<string, { unitCost: Prisma.Decimal | null; cogs: Prisma.Decimal | null; status: 'FINAL' | 'PROVISIONAL' | 'UNVALUED'; pre: Prisma.Decimal; post: Prisma.Decimal; previousValue: Prisma.Decimal | null }>();
+    const stockShortages: Array<{ productId: string; sku: string; productName: string; preSaleQuantity: Prisma.Decimal; soldQuantity: Prisma.Decimal; postSaleQuantity: Prisma.Decimal; shortageIntroduced: Prisma.Decimal; shortageBalance: Prisma.Decimal }> = [];
+    for (const request of stockRequests) {
+      const snapshot = await tx.stockSnapshot.findUnique({ where: { locationId_productId: { locationId: input.locationId, productId: request.productId } } });
+      const availableQuantity = snapshot?.quantity ?? new Prisma.Decimal(0);
+      const remainingQuantity = availableQuantity.minus(request.baseQuantity);
+      const latestCost = await latestInventoryCost(tx, input.companyId, input.locationId, request.productId);
+      const product = byId.get(request.productId)!;
+      const unitCost = latestCost?.averageUnitCost ?? product.basePurchaseCost;
+      const status = unitCost == null ? 'UNVALUED' : remainingQuantity.lessThan(0) || !latestCost ? 'PROVISIONAL' : latestCost.costStatus;
+      const previousValue = latestCost?.runningValue ?? (unitCost == null ? null : availableQuantity.mul(unitCost));
+      costByProduct.set(request.productId, { unitCost, cogs: unitCost == null ? null : request.baseQuantity.mul(unitCost), status, pre: availableQuantity, post: remainingQuantity, previousValue });
+      await tx.stockSnapshot.upsert({ where: { locationId_productId: { locationId: input.locationId, productId: request.productId } }, update: { quantity: remainingQuantity, capturedAt: now }, create: { locationId: input.locationId, productId: request.productId, quantity: remainingQuantity } });
+      if (remainingQuantity.lessThan(0)) stockShortages.push({
+        productId: request.productId,
+        sku: request.sku,
+        productName: request.productName,
+        preSaleQuantity: availableQuantity,
+        soldQuantity: request.baseQuantity,
+        postSaleQuantity: remainingQuantity,
+        // If stock was already negative, this sale introduces only the units sold;
+        // the larger ending negative balance is retained separately for follow-up.
+        shortageIntroduced: availableQuantity.greaterThan(0) ? request.baseQuantity.minus(availableQuantity) : request.baseQuantity,
+        shortageBalance: remainingQuantity.abs(),
+      });
+    }
+    const eInvoiceRequestToken = company.customerEInvoiceRequestsEnabled ? EInvoiceController.token() : null;
     const sale = await tx.sale.create({ data: {
       companyId: input.companyId, locationId: input.locationId, registerId: input.registerId,
       cashierId: input.cashierId, customerId: input.customerId, priceLevelId: input.priceLevelId,
       shiftId: input.shiftId, receiptNo, status: 'COMPLETED', subtotal: totals.subtotal,
       discountTotal: totals.discountTotal, taxTotal: 0, grandTotal: totals.grandTotal,
-      offlineId: input.offlineId, deviceId: input.deviceId, completedAt: now, eInvoiceRequestToken: company.customerEInvoiceRequestsEnabled ? EInvoiceController.token() : null,
+      offlineId: input.offlineId, deviceId: input.deviceId, completedAt: now, eInvoiceRequestToken,
     }});
+    await tx.sale.update({ where: { id: sale.id }, data: { receiptSnapshot: { version: 1, company: { name: company.name, legalName: company.legalName, registrationNo: company.registrationNo, brnNew: company.brnNew, brnOld: company.brnOld, tin: company.tin, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter }, presentation: { receiptPaperWidthMm: company.receiptPaperWidthMm, receiptTemplate: company.receiptTemplate, receiptDividerStyle: company.receiptDividerStyle, receiptShowLogo: company.receiptShowLogo, receiptShowSku: company.receiptShowSku, receiptChineseMode: company.receiptChineseMode }, eInvoiceRequestToken } } });
     if (exchangeReturn) await tx.return.update({ where: { id: exchangeReturn.id }, data: { replacementSaleId: sale.id } });
 
+    const firstSaleItemByProduct = new Map<string, string>();
+    const fifoCostByProduct = new Map<string, { cogs: Prisma.Decimal | null; status: 'FINAL' | 'PROVISIONAL' | 'UNVALUED' }>();
     for (let index = 0; index < priced.length; index++) {
       const item = priced[index];
       const line = totals.lines[index];
       const baseQuantity = new Prisma.Decimal(item.quantity).mul(item.uom.conversionFactor);
-      if (item.product.trackStock) {
-        // Keep trading when a physical count is not yet updated. The negative
-        // balance is an intentional, auditable stock-shortage signal for shift close.
-        const previous = await tx.stockSnapshot.findUnique({ where: { locationId_productId: { locationId: input.locationId, productId: item.product.id } } });
-        const remaining = Number(previous?.quantity ?? 0) - Number(baseQuantity);
-        await tx.stockSnapshot.upsert({
-          where: { locationId_productId: { locationId: input.locationId, productId: item.product.id } },
-          update: { quantity: { decrement: baseQuantity }, capturedAt: now },
-          create: { locationId: input.locationId, productId: item.product.id, quantity: baseQuantity.negated(), capturedAt: now },
-        });
-        if (remaining < 0) await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'STOCK_SHORTAGE_SOLD', entityType: 'Product', entityId: item.product.id, after: { saleId: sale.id, productName: item.product.name, previousQuantity: Number(previous?.quantity ?? 0), quantitySold: Number(baseQuantity), remainingQuantity: remaining, locationId: input.locationId } } });
-      }
+      const cost = item.product.trackStock ? costByProduct.get(item.product.id) : undefined;
       const saleItem = await tx.saleItem.create({ data: {
         saleId: sale.id, productId: item.product.id, uomId: item.uom.id, description: item.product.name,
         quantity: item.quantity, baseQuantity, unitPrice: item.unitPrice,
         lineDiscount: line.lineDiscountCents / 100, taxAmount: 0, lineTotal: line.lineTotalCents / 100,
       }});
+      const fifo = item.product.trackStock && item.product.fifoEnabledAt ? await allocateFifoSale(tx, { companyId: input.companyId, locationId: input.locationId, productId: item.product.id, uomId: item.uom.id, saleItemId: saleItem.id, quantity: baseQuantity, actorId: input.cashierId, receiptNo, occurredAt: now, fallbackUnitCost: cost?.unitCost ?? null, override: item.fifoOverride }) : null;
+      const itemCogs = fifo ? fifo.cogs : cost?.unitCost == null ? null : baseQuantity.mul(cost.unitCost); const itemUnitCost = fifo ? fifo.blendedUnitCost : cost?.unitCost ?? null; const itemStatus = fifo?.status ?? cost?.status ?? 'UNVALUED';
+      await setSaleItemCost(tx, saleItem.id, itemUnitCost, itemCogs, itemStatus);
+      if (fifo) { const aggregate = fifoCostByProduct.get(item.product.id); fifoCostByProduct.set(item.product.id, { cogs: !aggregate ? fifo.cogs : aggregate.cogs == null || fifo.cogs == null ? null : aggregate.cogs.add(fifo.cogs), status: aggregate?.status === 'UNVALUED' || fifo.status === 'UNVALUED' ? 'UNVALUED' : aggregate?.status === 'PROVISIONAL' || fifo.status === 'PROVISIONAL' ? 'PROVISIONAL' : 'FINAL' }); }
+      if (!firstSaleItemByProduct.has(item.product.id)) firstSaleItemByProduct.set(item.product.id, saleItem.id);
       if (item.discount) await tx.discountOverride.create({ data: {
         saleId: sale.id, saleItemId: saleItem.id, scope: 'LINE', type: item.discount.type,
         inputValue: item.discount.value, amount: line.lineDiscountCents / 100,
         reason: item.discount.reason?.trim() || 'Item discount', approvedById: item.discount.approvedById,
       }});
+    }
+    for (const request of stockRequests) {
+      const cost = costByProduct.get(request.productId)!;
+      const fifoCost = fifoCostByProduct.get(request.productId); if (fifoCost) { cost.cogs = fifoCost.cogs; cost.unitCost = fifoCost.cogs == null ? null : fifoCost.cogs.div(request.baseQuantity); cost.status = fifoCost.status; }
+      const valueDelta = cost.cogs == null ? null : cost.cogs.negated();
+      const fifoEnabled = Boolean(byId.get(request.productId)?.fifoEnabledAt); const fifoValue = fifoEnabled ? await tx.$queryRaw<Array<{ value: Prisma.Decimal | null }>>(Prisma.sql`SELECT SUM("remainingQuantity" * "finalUnitCost") AS "value" FROM "InventoryBatch" WHERE "companyId"=${input.companyId} AND "locationId"=${input.locationId} AND "productId"=${request.productId} AND "status" IN ('POSTED','SHORTAGE')`) : []; const runningValue = fifoEnabled ? fifoValue[0]?.value ?? null : cost.previousValue == null || valueDelta == null ? null : cost.previousValue.add(valueDelta);
+      await recordInventoryLedger(tx, { companyId: input.companyId, locationId: input.locationId, productId: request.productId, saleItemId: firstSaleItemByProduct.get(request.productId), actorId: input.cashierId, type: 'SALE', quantityDelta: request.baseQuantity.negated(), unitCost: cost.unitCost, valueDelta, runningQuantity: cost.post, runningValue, averageUnitCost: fifoEnabled ? null : cost.unitCost, costStatus: cost.status, referenceType: 'SALE', referenceId: sale.id, reason: `Completed receipt ${receiptNo}`, createdAt: now });
+      if (fifoEnabled) await assertFifoStockInvariant(tx, { companyId: input.companyId, locationId: input.locationId, productId: request.productId });
     }
     if (input.saleDiscount) await tx.discountOverride.create({ data: {
       saleId: sale.id, scope: 'SALE', type: input.saleDiscount.type, inputValue: input.saleDiscount.value,
@@ -248,6 +336,7 @@ export class CheckoutService {
       await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'EXCHANGE_DIFFERENCE_REFUNDED', entityType: 'Return', entityId: exchangeReturn.id, after: { replacementSaleId: sale.id, amount: input.exchangeRefund.amount, method: input.exchangeRefund.method } } });
     }
     await tx.payment.createMany({ data: payments.map((payment) => ({ saleId: sale.id, method: payment.method as never, amount: payment.amount, tenderedAmount: payment.tenderedAmount, changeAmount: payment.changeAmount, reference: payment.reference ?? (payment.storeCreditId ? `store-credit:${payment.storeCreditId}` : undefined) })) });
+    for (const shortage of stockShortages) await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'STOCK_SHORTAGE_SOLD', entityType: 'SaleItem', entityId: sale.id, after: { ...shortage, preSaleQuantity: shortage.preSaleQuantity.toFixed(), soldQuantity: shortage.soldQuantity.toFixed(), postSaleQuantity: shortage.postSaleQuantity.toFixed(), shortageIntroduced: shortage.shortageIntroduced.toFixed(), shortageBalance: shortage.shortageBalance.toFixed(), receiptNo, shiftId: input.shiftId, timestamp: now.toISOString() } } });
     await tx.syncJob.create({ data: { companyId: input.companyId, provider: 'BUKKU', entityType: 'SALE', entityId: sale.id, action: 'SALE_COMPLETED', direction: 'OUTBOUND', idempotencyKey: `bukku:sale-completed:${sale.id}`, payload: { event: 'SALE_COMPLETED', saleId: sale.id } } });
     await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'CHECKOUT_COMPLETED', entityType: 'Sale', entityId: sale.id, after: { receiptNo, totals }, metadata: { offlineId: input.offlineId, deviceId: input.deviceId, exchangeReturnId: input.exchangeReturnId, exchangeRefund: input.exchangeRefund ? { amount: input.exchangeRefund.amount, method: input.exchangeRefund.method } : undefined } } });
     return tx.sale.findUniqueOrThrow({ where: { id: sale.id }, include: this.saleInclude() });
@@ -268,6 +357,13 @@ export class CheckoutService {
     const approver = await tx.user.findFirst({ where: { id: discount.approvedById, companyId, status: 'ACTIVE' }, include: { role: true } });
     const permissions = Array.isArray(approver?.role.permissions) ? approver.role.permissions : [];
     if (!approver || !permissions.includes('discount.approve')) throw new BadRequestException('Discount requires an authorized approver');
+  }
+
+  private async assertFifoOverride(override: { batchId: string; reason: string; approvedById: string }, companyId: string, tx: Prisma.TransactionClient) {
+    if (!override.reason.trim()) throw new BadRequestException('FIFO override requires a reason');
+    const approver = await tx.user.findFirst({ where: { id: override.approvedById, companyId, status: 'ACTIVE' }, include: { role: true } });
+    const permissions = Array.isArray(approver?.role.permissions) ? approver.role.permissions.filter((permission): permission is string => typeof permission === 'string') : [];
+    if (!approver || !permissions.some((permission) => ['stock.adjust', 'backoffice.view', 'company.manage'].includes(permission))) throw new ForbiddenException('FIFO override requires an authorized manager');
   }
 
   private async nextReceiptNo(tx: Prisma.TransactionClient, locationId: string, code: string, timezone: string) {

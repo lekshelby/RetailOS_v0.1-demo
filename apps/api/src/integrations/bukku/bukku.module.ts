@@ -10,6 +10,6 @@ import { DatabaseModule } from '../../database/database.module';
   imports: [DatabaseModule],
   controllers: [BukkuSyncController],
   providers: [BukkuAdapter, BukkuHttpClient, BukkuSyncService, BukkuAutoSyncService],
-  exports: [BukkuAdapter, BukkuSyncService, BukkuAutoSyncService],
+  exports: [BukkuAdapter, BukkuHttpClient, BukkuSyncService, BukkuAutoSyncService],
 })
 export class BukkuModule {}

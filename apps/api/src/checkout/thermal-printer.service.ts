@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 export type PrinterTransport = 'LAN_ESC_POS' | 'WINDOWS_RAW' | 'SERIAL_ESC_POS';
-export type PrinterSettings = { lanHost?: string | null; lanPort?: number | null; windowsQueue?: string | null; serialPort?: string | null; serialBaudRate?: number | null };
+export type PrinterSettings = { lanHost?: string | null; lanPort?: number | null; windowsQueue?: string | null; serialPort?: string | null; serialBaudRate?: number | null; includeLogo?: boolean };
 
 const execFileAsync = promisify(execFile);
 
@@ -36,11 +36,42 @@ export class ThermalPrinterService {
   async print(method: string, lines: string[], paperWidthMm: number, settings: PrinterSettings = {}) {
     const transport = this.transportFor(method);
     const jobId = randomUUID();
-    const body = this.receiptDocument(lines, paperWidthMm);
+    const body = this.receiptDocument(lines, paperWidthMm, settings.includeLogo);
     const job = this.queue.catch(() => undefined).then(() => this.send(transport, body, settings));
     this.queue = job;
     await job;
     return { jobId, transport };
+  }
+
+  /** A connection probe never sends a cut command or customer document. */
+  async health(method: string, settings: PrinterSettings = {}) {
+    const transport = this.transportFor(method);
+    const checkedAt = new Date().toISOString();
+    try {
+      if (transport === 'LAN_ESC_POS') {
+        const host = settings.lanHost?.trim() || this.host;
+        if (!host || !this.isPrivateIpv4(host)) throw new BadRequestException('A private LAN printer address is required.');
+        const port = this.portNumber(settings.lanPort?.toString(), this.port);
+        await new Promise<void>((resolve, reject) => {
+          const socket = new Socket(); const timeout = setTimeout(() => socket.destroy(new Error('Timed out')), 3500);
+          socket.once('error', (error) => { clearTimeout(timeout); reject(error); });
+          socket.connect(port, host, () => { clearTimeout(timeout); socket.end(); resolve(); });
+        });
+        return { reachable: true, checkedAt, transport, endpoint: `${host}:${port}`, capabilities: { rawEscPos: true, cut: true, barcode: true, qr: true, chinese: 'configure a test print to verify' } };
+      }
+      if (transport === 'WINDOWS_RAW') {
+        const printer = settings.windowsQueue?.trim() || this.windowsPrinter;
+        if (!printer) throw new BadRequestException('A Windows printer queue is required.');
+        if (process.platform !== 'win32') throw new BadRequestException('Windows queue health checks require the Windows PC print hub.');
+        await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Get-Printer -Name '${printer.replace(/'/g, "''")}' -ErrorAction Stop | Out-Null`], { windowsHide: true, timeout: 5000 });
+        return { reachable: true, checkedAt, transport, endpoint: printer, capabilities: { rawEscPos: true, cut: true, barcode: true, qr: true, chinese: 'depends on the installed driver' } };
+      }
+      const port = settings.serialPort?.trim() || this.serialPort;
+      if (!port || !this.isSafeSerialPort(port)) throw new BadRequestException('A valid COM port is required.');
+      return { reachable: true, checkedAt, transport, endpoint: port, capabilities: { rawEscPos: true, cut: true, barcode: true, qr: true, chinese: 'configure a test print to verify' } };
+    } catch (error) {
+      return { reachable: false, checkedAt, transport, lastError: this.errorMessage(error), capabilities: { rawEscPos: true, chinese: 'unknown until a successful Chinese test print' } };
+    }
   }
 
   private async send(transport: PrinterTransport, body: Buffer, settings: PrinterSettings) {
@@ -97,12 +128,13 @@ export class ThermalPrinterService {
     }
   }
 
-  private receiptDocument(lines: string[], paperWidthMm: number) {
+  private receiptDocument(lines: string[], paperWidthMm: number, includeLogo?: boolean) {
     const width = this.charactersForPaper(paperWidthMm);
-    const divider = lines.indexOf('--------------------------------');
-    const header = lines.slice(0, Math.max(0, divider)).flatMap((line) => this.wrap(this.ascii(line), width));
-    const body = lines.slice(Math.max(0, divider)).flatMap((line) => this.wrap(this.ascii(line), width));
-    const logo = this.includeLogo ? this.logo() : Buffer.alloc(0);
+    const divider = lines.findIndex((line) => line.length >= 16 && /^(.)\1+$/.test(line));
+    const headerEnd = divider < 0 ? 0 : divider;
+    const header = lines.slice(0, headerEnd).flatMap((line) => this.wrap(this.ascii(line), width));
+    const body = lines.slice(headerEnd).flatMap((line) => this.wrap(this.ascii(line), width));
+    const logo = (includeLogo ?? this.includeLogo) ? this.logo() : Buffer.alloc(0);
     return Buffer.concat([
       Buffer.from([0x1b, 0x40, 0x1b, 0x61, 0x01]),
       logo,

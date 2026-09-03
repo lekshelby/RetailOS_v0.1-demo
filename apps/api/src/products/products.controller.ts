@@ -7,8 +7,8 @@ export class ProductsController {
   @Get('catalog') catalog(@Query('companyId') companyId: string, @Query('priceLevelId') priceLevelId?: string, @Query('locationId') locationId?: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
     return this.products.catalog(companyId, priceLevelId, locationId, Number(offset || 0), Number(limit || 250));
   }
-  @Get('lookup') lookup(@Query('companyId') companyId: string, @Query('query') query: string, @Query('priceLevelId') priceLevelId?: string, @Query('locationId') locationId?: string) {
-    return this.products.lookup(companyId, query, priceLevelId, locationId);
+  @Get('lookup') lookup(@Query('companyId') companyId: string, @Query('query') query: string, @Query('priceLevelId') priceLevelId?: string, @Query('locationId') locationId?: string, @Query('structured') structured?: string, @Query('related') related?: string) {
+    return this.products.lookup(companyId, query, priceLevelId, locationId, structured === 'true', related === 'true');
   }
   @Post(':id/stock-adjustment') adjustStock(@Param('id') productId: string, @Body() input: StockAdjustmentDto) {
     return this.products.adjustStock(productId, input);

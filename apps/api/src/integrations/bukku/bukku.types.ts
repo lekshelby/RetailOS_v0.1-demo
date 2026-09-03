@@ -7,7 +7,15 @@ export type ExternalStockBalance = { externalProductId?: string; externalLocatio
 export type ExternalProductDetail = { externalProductId?: string; raw: unknown };
 export type BukkuProductPriceType = 'SALE' | 'PURCHASE';
 export type BukkuProductCatalogue = { notChanged: boolean; version?: string; products: Array<{ externalId: string; sku?: string; name?: string; barcode?: string | string[]; classificationCode?: string; quantity?: number; trackInventory?: boolean; isSelling?: boolean; isBuying?: boolean; type?: string; archived?: boolean; updatedAt?: string; units: Array<{ externalId: string; label?: string; rate?: number; isBase?: boolean }>; bundle?: boolean; raw: unknown }> };
-export type CashInvoiceCommand = { localBatchId: string; businessDate: string; currency: string; lines: Array<{ localProductId: string; description: string; quantity: number; unitPrice: number; discount: number; tax: number }>; total: number };
+export type CashInvoiceCommand = {
+  number: string;
+  businessDate: string;
+  contactId: string;
+  currency: string;
+  locationId?: string;
+  lines: Array<{ productId: string; productUnitId: string; incomeAccountId: string; description: string; quantity: number; unitPrice: number; classificationCode: string; taxCodeId?: string }>;
+  payments: Array<{ accountId: string; paymentMethodId?: string; amount: number; reference?: string }>;
+};
 export type CreditNoteCommand = { localReturnId: string; originalExternalInvoiceId?: string; reason: string; lines: Array<{ localProductId: string; quantity: number; amount: number }> };
 export type ConnectorResult = { externalId: string; raw: unknown };
 

@@ -1,11 +1,12 @@
 import { Body, Controller, Get, Header, Param, Post, Query, Res } from '@nestjs/common';
-import { CashMovementDto, CloseShiftDto, OpenShiftDto } from './dto/shift.dto';
+import { CashMovementDto, CloseShiftDto, CorrectOpeningFloatDto, OpenShiftDto } from './dto/shift.dto';
 import { ShiftsService } from './shifts.service';
 
 @Controller('shifts')
 export class ShiftsController {
   constructor(private readonly shifts: ShiftsService) {}
   @Post('open') open(@Body() input: OpenShiftDto) { return this.shifts.open(input); }
+  @Post(':id/opening-float-correction') correctOpeningFloat(@Param('id') id: string, @Body() input: CorrectOpeningFloatDto) { return this.shifts.correctOpeningFloat(id, input); }
   @Get('current') current(@Query('registerId') registerId: string, @Query('companyId') companyId: string) { return this.shifts.current(registerId, companyId); }
   @Get('history') history(@Query('companyId') companyId: string, @Query('actorId') actorId: string, @Query('registerId') registerId?: string) { return this.shifts.history(companyId, actorId, registerId); }
   @Get(':id/report') report(@Param('id') id: string, @Query('companyId') companyId: string, @Query('actorId') actorId: string) { return this.shifts.report(id, companyId, actorId); }

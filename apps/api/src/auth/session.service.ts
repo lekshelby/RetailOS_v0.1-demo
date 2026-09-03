@@ -6,6 +6,7 @@ export type RetailosSession = {
   userId: string;
   companyId: string;
   permissions: string[];
+  issuedAt?: number;
   expiresAt: number;
 };
 
@@ -22,8 +23,9 @@ export class SessionService {
     this.durationMs = Number.isFinite(hours) && hours > 0 ? hours * 60 * 60 * 1000 : 12 * 60 * 60 * 1000;
   }
 
-  issue(input: Omit<RetailosSession, 'expiresAt'>) {
-    const payload: RetailosSession = { ...input, expiresAt: Date.now() + this.durationMs };
+  issue(input: Omit<RetailosSession, 'expiresAt' | 'issuedAt'>) {
+    const issuedAt = Date.now();
+    const payload: RetailosSession = { ...input, issuedAt, expiresAt: issuedAt + this.durationMs };
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
     return `${encoded}.${this.signature(encoded)}`;
   }

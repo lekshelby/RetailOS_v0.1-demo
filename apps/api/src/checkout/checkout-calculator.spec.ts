@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { calculateCheckout, settlePayments } from './checkout-calculator';
+import { calculateCheckout, receiptHistoryPaymentAmount, settlePayments } from './checkout-calculator';
 
 describe('checkout calculations', () => {
   it('calculates line and whole-sale discounts in cents', () => {
@@ -24,5 +24,21 @@ describe('checkout calculations', () => {
   });
   it('does not allow non-cash overpayment', () => {
     expect(() => settlePayments([{ method: 'CARD', amount: 60 }], 5340)).toThrow(BadRequestException);
+  });
+
+  it('displays the settled sale amount in history without subtracting cash change twice', () => {
+    const [cash] = settlePayments([{ method: 'CASH', amount: 300 }], 2000);
+    expect(cash).toMatchObject({ amount: 20, tenderedAmount: 300, changeAmount: 280 });
+    expect(receiptHistoryPaymentAmount(cash)).toBe(20);
+  });
+
+  it('keeps non-cash history at the settled amount and never negative for a completed sale', () => {
+    const [card] = settlePayments([{ method: 'CARD', amount: 20 }], 2000);
+    expect(receiptHistoryPaymentAmount(card)).toBe(20);
+  });
+
+  it('rejects discounts that would silently become zero or be capped', () => {
+    expect(() => calculateCheckout([{ quantity: 1, unitPrice: 20, discount: { type: 'PERCENTAGE', value: 200 } }])).toThrow('Percentage discount cannot exceed 100%');
+    expect(() => calculateCheckout([{ quantity: 1, unitPrice: 20, discount: { type: 'FIXED', value: 20.01 } }])).toThrow('Fixed discount cannot exceed the line total');
   });
 });

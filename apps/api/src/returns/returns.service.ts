@@ -1,6 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { latestInventoryCost, recordInventoryLedger } from '../inventory/inventory-ledger';
+import { assertFifoStockInvariant, restoreFifoReturn } from '../inventory/fifo';
 import { CreateReturnDto, RefundStoreCreditDto } from './dto/create-return.dto';
 
 const cents = (value: number) => Math.round((value + Number.EPSILON) * 100);
@@ -13,10 +15,12 @@ export class ReturnsService {
     return this.db.$transaction(async (tx) => {
       const [sale, cashier] = await Promise.all([
         tx.sale.findFirst({ where: { id: input.saleId, companyId: input.companyId, status: 'COMPLETED' }, include: { company: { select: { timezone: true } }, items: { include: { product: { select: { trackStock: true } } } } } }),
-        tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' } }),
+        tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
       ]);
       if (!sale) throw new NotFoundException('Completed sale not found');
       if (!cashier) throw new BadRequestException('Cashier is not active');
+      const permissions = Array.isArray(cashier.role.permissions) ? cashier.role.permissions : [];
+      if (!permissions.includes('returns')) throw new ForbiddenException('Returns permission is required');
       if (!sale.completedAt || new Date() > this.returnDeadline(sale.completedAt, sale.company.timezone)) throw new BadRequestException('Returns, refunds, and exchanges are available only until the end of the next working day (Monday to Saturday, 5:00 PM).');
       if (input.type === 'REFUND' && !input.refundMethod) throw new BadRequestException('Choose a refund method for a refund return');
       if (input.type === 'EXCHANGE' && input.refundMethod) throw new BadRequestException('Exchange returns create store credit and cannot also be refunded');
@@ -47,9 +51,24 @@ export class ReturnsService {
         items: { create: lines.map((line) => ({ saleItemId: line.saleItem.id, productId: line.saleItem.productId, uomId: line.saleItem.uomId, quantity: line.quantity, baseQuantity: line.baseQuantity, amount: line.amount })) },
       }, include: { items: true } });
       if (input.type !== 'DISPOSE') {
-        for (const line of lines) {
+        for (let index = 0; index < lines.length; index++) {
+          const line = lines[index];
           if (!line.saleItem.product.trackStock) continue;
-          await tx.stockSnapshot.upsert({ where: { locationId_productId: { locationId: sale.locationId, productId: line.saleItem.productId } }, update: { quantity: { increment: line.baseQuantity }, capturedAt: new Date() }, create: { locationId: sale.locationId, productId: line.saleItem.productId, quantity: line.baseQuantity } });
+          const before = await tx.stockSnapshot.findUnique({ where: { locationId_productId: { locationId: sale.locationId, productId: line.saleItem.productId } } });
+          const pre = before?.quantity ?? new Prisma.Decimal(0);
+          const post = pre.add(line.baseQuantity);
+          await tx.stockSnapshot.upsert({ where: { locationId_productId: { locationId: sale.locationId, productId: line.saleItem.productId } }, update: { quantity: post, capturedAt: new Date() }, create: { locationId: sale.locationId, productId: line.saleItem.productId, quantity: post } });
+          const latest = await latestInventoryCost(tx, input.companyId, sale.locationId, line.saleItem.productId);
+          const fifoEnabled = await tx.product.findUnique({ where: { id: line.saleItem.productId }, select: { fifoEnabledAt: true } });
+          const costedSaleItem = line.saleItem as typeof line.saleItem & { unitCost: Prisma.Decimal | null };
+          const restored = fifoEnabled?.fifoEnabledAt ? await restoreFifoReturn(tx, { companyId: input.companyId, saleItemId: line.saleItem.id, returnItemId: record.items[index].id, quantity: line.baseQuantity, actorId: input.cashierId, occurredAt: new Date(), reason: record.reason }) : null;
+          const restoredValue = restored ? restored.reduce<Prisma.Decimal | null>((sum, allocation) => sum == null || allocation.value == null ? null : sum.add(allocation.value), new Prisma.Decimal(0)) : null;
+          const unitCost = restored ? (restoredValue == null ? null : restoredValue.div(line.baseQuantity)) : costedSaleItem.unitCost ?? latest?.averageUnitCost;
+          const valueDelta = restored ? restoredValue : unitCost == null ? null : line.baseQuantity.mul(unitCost);
+          const priorValue = latest?.runningValue ?? (unitCost == null ? null : pre.mul(unitCost));
+          const status = unitCost == null ? 'UNVALUED' : restored ? 'FINAL' : post.lessThan(0) || !latest ? 'PROVISIONAL' : latest.costStatus;
+          await recordInventoryLedger(tx, { companyId: input.companyId, locationId: sale.locationId, productId: line.saleItem.productId, saleItemId: line.saleItem.id, returnItemId: record.items[index]?.id, actorId: input.cashierId, uomId: line.saleItem.uomId, type: 'RETURN', sourceType: 'RETURN', quantityDelta: line.baseQuantity, unitCost, valueDelta, runningQuantity: post, runningValue: priorValue == null || valueDelta == null ? null : priorValue.add(valueDelta), averageUnitCost: restored ? null : unitCost, costStatus: status, referenceType: 'RETURN', referenceId: record.id, reason: record.reason });
+          if (restored) await assertFifoStockInvariant(tx, { companyId: input.companyId, locationId: sale.locationId, productId: line.saleItem.productId });
         }
       }
       const refund = input.refundMethod ? await tx.returnPayment.create({ data: { returnId: record.id, method: input.refundMethod, amount: total } }) : null;
@@ -70,9 +89,11 @@ export class ReturnsService {
     return this.db.$transaction(async (tx) => {
       const [credit, cashier] = await Promise.all([
         tx.storeCredit.findFirst({ where: { id: creditId, companyId: input.companyId }, include: { return: true } }),
-        tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' } }),
+        tx.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
       ]);
-      if (!credit || !cashier) throw new NotFoundException('Store credit or cashier was not found');
+      if (!credit) throw new NotFoundException('Store credit was not found');
+      const permissions = Array.isArray(cashier?.role.permissions) ? cashier.role.permissions : [];
+      if (!cashier || !permissions.includes('returns')) throw new ForbiddenException('Returns permission is required');
       if (input.amount > Number(credit.balance)) throw new ConflictException('Refund amount exceeds the remaining store credit');
       if (input.refundMethod === 'CASH') {
         if (!input.shiftId || credit.return.shiftId !== input.shiftId) throw new BadRequestException('Cash refund must be processed in the same open exchange shift');

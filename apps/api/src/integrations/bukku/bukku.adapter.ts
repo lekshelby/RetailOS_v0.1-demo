@@ -53,8 +53,31 @@ export class BukkuAdapter implements AccountingConnector {
     return this.findArray(payload, 'product_detail_list').map((raw) => ({ externalProductId: this.stringField(raw, 'product_id', 'id'), raw }));
   }
 
-  async pushDailyCashInvoice(_command: CashInvoiceCommand, _idempotencyKey: string): Promise<ConnectorResult> {
-    throw new NotImplementedException('Bukku invoice posting requires mapped contact, account, location, tax-code, product-unit, and status IDs; RetailOS will not invent financial mappings.');
+  async pushDailyCashInvoice(command: CashInvoiceCommand, _idempotencyKey: string): Promise<ConnectorResult> {
+    const existing = await this.findInvoiceByNumber(command.number);
+    if (existing) return { externalId: String(existing.id), raw: { transaction: existing, alreadyExisted: true } };
+    const body = {
+      payment_mode: 'cash', contact_id: Number(command.contactId), number: command.number, date: command.businessDate,
+      currency_code: command.currency, exchange_rate: 1, tax_mode: 'exclusive', status: 'ready', myinvois_action: 'NORMAL',
+      description: `RetailOS daily sales for ${command.businessDate}`,
+      form_items: command.lines.map((line) => ({ type: null, account_id: Number(line.incomeAccountId), description: line.description, service_date: command.businessDate, product_id: Number(line.productId), product_unit_id: Number(line.productUnitId), ...(command.locationId ? { location_id: Number(command.locationId) } : {}), unit_price: line.unitPrice, quantity: line.quantity, discount: 0, ...(line.taxCodeId ? { tax_code_id: Number(line.taxCodeId) } : {}), classification_code: line.classificationCode })),
+      deposit_items: command.payments.map((payment) => ({ account_id: Number(payment.accountId), ...(payment.paymentMethodId ? { payment_method_id: Number(payment.paymentMethodId) } : {}), amount: payment.amount, ...(payment.reference ? { number: payment.reference } : {}) })),
+    };
+    try {
+      const payload = await this.client.post('/sales/invoices', body) as { transaction?: { id?: number | string } };
+      const transaction = payload.transaction;
+      if (transaction?.id == null) throw new Error('Bukku did not return the created invoice ID');
+      return { externalId: String(transaction.id), raw: payload };
+    } catch (error) {
+      const createdDuringTimeout = await this.findInvoiceByNumber(command.number).catch(() => undefined);
+      if (createdDuringTimeout) return { externalId: String(createdDuringTimeout.id), raw: { transaction: createdDuringTimeout, recoveredAfterError: true } };
+      throw error;
+    }
+  }
+
+  private async findInvoiceByNumber(number: string) {
+    const payload = await this.client.get(`/sales/invoices?search=${encodeURIComponent(number)}&page=1&page_size=20`) as { transactions?: Array<{ id?: number | string; number?: string }> };
+    return payload.transactions?.find((transaction) => transaction.number === number);
   }
 
   async pushSalesCreditNote(_command: CreditNoteCommand, _idempotencyKey: string): Promise<ConnectorResult> {

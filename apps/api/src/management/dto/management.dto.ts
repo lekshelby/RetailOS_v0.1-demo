@@ -26,13 +26,27 @@ export class UpdateCompanyProfileDto extends ManagerRequestDto {
   @IsOptional() @IsString() @Length(1, 160) printerWindowsQueue?: string;
   @IsOptional() @IsString() @Matches(/^COM([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-6])$/i) printerSerialPort?: string;
   @IsOptional() @IsNumber() @Min(1200) printerSerialBaudRate?: number;
+  @IsOptional() @IsString() @Length(1, 120) printerProfileName?: string;
+  @IsOptional() @IsIn(['LAN_ESC_POS', 'WINDOWS_RAW', 'SERIAL_ESC_POS']) printerFallbackMethod?: string;
+  @IsOptional() @IsString() @Matches(/^(?:10|127|192\.168)\.\d{1,3}\.\d{1,3}$/) printerFallbackLanHost?: string;
+  @IsOptional() @IsNumber() @Min(1) printerFallbackLanPort?: number;
+  @IsOptional() @IsIn(['COMPACT', 'STANDARD', 'DETAILED']) receiptTemplate?: string;
+  @IsOptional() @IsIn(['DASHED', 'DOUBLE', 'DOT']) receiptDividerStyle?: string;
+  @IsOptional() @IsBoolean() receiptShowLogo?: boolean;
+  @IsOptional() @IsBoolean() receiptShowSku?: boolean;
+  @IsOptional() @IsIn(['AUTO', 'UTF8', 'RASTER']) receiptChineseMode?: string;
   @IsOptional() @IsBoolean() customerEInvoiceRequestsEnabled?: boolean;
   @IsOptional() @IsBoolean() bukkuDailyInvoiceEnabled?: boolean;
   @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceContactId?: string;
   @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceLocationId?: string;
   @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceRevenueAccountId?: string;
-  @IsOptional() @IsString() @Length(1, 160) bukkuDailyInvoiceTaxCodeId?: string;
+  // An empty string intentionally clears an old mapping; only a supplied non-empty ID needs validation.
+  @IsOptional() @ValidateIf((_object, value) => value !== '') @IsString() @Length(1, 160) bukkuDailyInvoiceTaxCodeId?: string;
   @IsOptional() @IsObject() bukkuDailyInvoicePaymentAccounts?: Record<string, string>;
+}
+
+export class PreviewBukkuDailyInvoiceDto extends ManagerRequestDto {
+  @IsString() @Length(1, 80) shiftId!: string;
 }
 
 export class CreateManagedStaffDto extends ManagerRequestDto {
@@ -89,6 +103,18 @@ export class UpdateManagedProductDto extends ManagerRequestDto {
   @IsOptional() @IsBoolean() trackStock?: boolean;
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @ValidateNested({ each: true }) @Type(() => UpdateManagedProductUomDto) uoms?: UpdateManagedProductUomDto[];
+}
+
+export class CreateProductAliasDto extends ManagerRequestDto {
+  @IsString() @Length(1, 160) text!: string;
+}
+
+export class ProductLifecycleDto extends ManagerRequestDto {
+  @IsBoolean() confirmed!: boolean;
+}
+
+export class DeleteManagedProductDto extends ProductLifecycleDto {
+  @IsOptional() @IsBoolean() hardDelete?: boolean;
 }
 
 export class CreateManagedContactDto extends ManagerRequestDto {

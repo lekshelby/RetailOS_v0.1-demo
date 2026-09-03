@@ -1,14 +1,21 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, ManagerRequestDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
+import { BukkuHttpClient } from '../integrations/bukku/bukku-http.client';
+import { receiptHistoryPaymentAmount } from '../checkout/checkout-calculator';
+import { CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, CreateProductAliasDto, DeleteManagedProductDto, ManagerRequestDto, ProductLifecycleDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
+import { recordInventoryLedger } from '../inventory/inventory-ledger';
 import { hashPin } from '../auth/pin';
+import { generatedAliasesForProduct, normalizeProductText, structuredSearchFieldsForProduct } from '../products/product-search';
 
-type ManagedProduct = Prisma.ProductGetPayload<{ include: { uoms: true; barcodes: true; prices: { include: { priceLevel: true } }; purchasePrices: true } }>;
+type ManagedProduct = Prisma.ProductGetPayload<{ include: { uoms: true; barcodes: true; aliases: true; prices: { include: { priceLevel: true } }; purchasePrices: true } }>;
+type BukkuAccount = { id?: string | number; code?: string; name?: string; type?: string; system_type?: string; is_archived?: boolean; children?: BukkuAccount[] };
+type BukkuContact = { id?: string | number; code?: string; display_name?: string; legal_name?: string; types?: string[] };
+type BukkuLocation = { id?: string | number; code?: string; name?: string };
 
 @Injectable()
 export class ManagementService {
-  constructor(private readonly db: PrismaService) {}
+  constructor(private readonly db: PrismaService, private readonly bukku: BukkuHttpClient) {}
 
   async profile(input: ManagerRequestDto) {
     await this.assertAnyPermission(input, ['company.manage', 'printer.manage']);
@@ -18,7 +25,7 @@ export class ManagementService {
   }
 
   async updateProfile(input: UpdateCompanyProfileDto) {
-    const printerOnly = input.receiptFooter !== undefined || input.receiptPaperWidthMm !== undefined || input.printerConnectionMethod !== undefined || input.printerLanHost !== undefined || input.printerLanPort !== undefined || input.printerWindowsQueue !== undefined || input.printerSerialPort !== undefined || input.printerSerialBaudRate !== undefined;
+    const printerOnly = input.receiptFooter !== undefined || input.receiptPaperWidthMm !== undefined || input.printerConnectionMethod !== undefined || input.printerLanHost !== undefined || input.printerLanPort !== undefined || input.printerWindowsQueue !== undefined || input.printerSerialPort !== undefined || input.printerSerialBaudRate !== undefined || input.printerProfileName !== undefined || input.printerFallbackMethod !== undefined || input.printerFallbackLanHost !== undefined || input.printerFallbackLanPort !== undefined || input.receiptTemplate !== undefined || input.receiptDividerStyle !== undefined || input.receiptShowLogo !== undefined || input.receiptShowSku !== undefined || input.receiptChineseMode !== undefined;
     const companyFields = [input.name, input.legalName, input.registrationNo, input.tin, input.brnNew, input.brnOld, input.address, input.officePhone, input.phone, input.email];
     await this.assertPermission(input, printerOnly && companyFields.every((field) => field === undefined) ? 'printer.manage' : 'company.manage');
     const data: Prisma.CompanyUpdateInput = {
@@ -36,6 +43,14 @@ export class ManagementService {
       ...(input.printerLanHost !== undefined ? { printerLanHost: input.printerLanHost.trim() || null } : {}),
       ...(input.printerWindowsQueue !== undefined ? { printerWindowsQueue: input.printerWindowsQueue.trim() || null } : {}),
       ...(input.printerSerialPort !== undefined ? { printerSerialPort: input.printerSerialPort.trim().toUpperCase() || null } : {}),
+      ...(input.printerProfileName !== undefined ? { printerProfileName: input.printerProfileName.trim() } : {}),
+      ...(input.printerFallbackMethod !== undefined ? { printerFallbackMethod: input.printerFallbackMethod || null } : {}),
+      ...(input.printerFallbackLanHost !== undefined ? { printerFallbackLanHost: input.printerFallbackLanHost.trim() || null } : {}),
+      ...(input.receiptTemplate !== undefined ? { receiptTemplate: input.receiptTemplate } : {}),
+      ...(input.receiptDividerStyle !== undefined ? { receiptDividerStyle: input.receiptDividerStyle } : {}),
+      ...(input.receiptShowLogo !== undefined ? { receiptShowLogo: input.receiptShowLogo } : {}),
+      ...(input.receiptShowSku !== undefined ? { receiptShowSku: input.receiptShowSku } : {}),
+      ...(input.receiptChineseMode !== undefined ? { receiptChineseMode: input.receiptChineseMode } : {}),
       ...(input.customerEInvoiceRequestsEnabled !== undefined ? { customerEInvoiceRequestsEnabled: input.customerEInvoiceRequestsEnabled } : {}),
       ...(input.bukkuDailyInvoiceEnabled !== undefined ? { bukkuDailyInvoiceEnabled: input.bukkuDailyInvoiceEnabled } : {}),
       ...(input.bukkuDailyInvoiceContactId !== undefined ? { bukkuDailyInvoiceContactId: input.bukkuDailyInvoiceContactId.trim() || null } : {}),
@@ -48,6 +63,7 @@ export class ManagementService {
     if (input.printerConnectionMethod !== undefined) data.printerConnectionMethod = input.printerConnectionMethod;
     if (input.printerLanPort !== undefined) data.printerLanPort = input.printerLanPort;
     if (input.printerSerialBaudRate !== undefined) data.printerSerialBaudRate = input.printerSerialBaudRate;
+    if (input.printerFallbackLanPort !== undefined) data.printerFallbackLanPort = input.printerFallbackLanPort;
     const company = await this.db.company.update({ where: { id: input.companyId }, data });
     await this.db.auditLog.create({ data: { companyId: company.id, actorId: input.actorId, action: 'COMPANY_PROFILE_UPDATED', entityType: 'Company', entityId: company.id, after: this.profileView(company) } });
     return this.profileView(company);
@@ -68,7 +84,7 @@ export class ManagementService {
     let subtotal = 0; let discountTotal = 0; let taxTotal = 0; let grandTotal = 0;
     for (const sale of shift.sales) {
       subtotal += Number(sale.subtotal); discountTotal += Number(sale.discountTotal); taxTotal += Number(sale.taxTotal); grandTotal += Number(sale.grandTotal);
-      for (const payment of sale.payments) paymentTotals[payment.method] = (paymentTotals[payment.method] ?? 0) + Number(payment.amount) - Number(payment.changeAmount);
+      for (const payment of sale.payments) paymentTotals[payment.method] = (paymentTotals[payment.method] ?? 0) + receiptHistoryPaymentAmount({ method: payment.method, amount: Number(payment.amount), changeAmount: Number(payment.changeAmount) });
       for (const item of sale.items) {
         const key = `${item.productId}:${item.uomId}`;
         const row = groupedItems.get(key) ?? { sku: item.product.sku, description: item.description || item.product.name, uom: item.uom.code || item.uom.name, quantity: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
@@ -76,11 +92,34 @@ export class ManagementService {
         groupedItems.set(key, row);
       }
     }
-    const required = [['Enable daily invoice preview', company.bukkuDailyInvoiceEnabled], ['Bukku cash-sales contact ID', company.bukkuDailyInvoiceContactId], ['Bukku revenue account ID', company.bukkuDailyInvoiceRevenueAccountId], ['Bukku tax code ID', company.bukkuDailyInvoiceTaxCodeId]] as const;
+    const required = [['Enable Bukku daily invoice posting', company.bukkuDailyInvoiceEnabled], ['Bukku cash-sales contact ID', company.bukkuDailyInvoiceContactId], ['Bukku revenue account ID', company.bukkuDailyInvoiceRevenueAccountId]] as const;
     const missing: string[] = required.filter(([, value]) => !value).map(([label]) => label);
     for (const method of Object.keys(paymentTotals)) if (!paymentAccounts[method]) missing.push(`Bukku payment account ID for ${method}`);
     const businessDate = (shift.closedAt ?? new Date()).toISOString().slice(0, 10);
     return { previewOnly: true, notice: 'Preview only. RetailOS has not created or posted an invoice in Bukku.', mapping: { enabled: company.bukkuDailyInvoiceEnabled, contactId: company.bukkuDailyInvoiceContactId, locationId: company.bukkuDailyInvoiceLocationId, revenueAccountId: company.bukkuDailyInvoiceRevenueAccountId, taxCodeId: company.bukkuDailyInvoiceTaxCodeId, paymentAccounts, complete: missing.length === 0, missing }, invoice: { idempotencyKey: `bukku:shift-daily-digest:${shift.id}`, businessDate, reference: `RetailOS closed shift ${shift.id}`, location: { retailosName: shift.location.name, bukkuId: company.bukkuDailyInvoiceLocationId }, register: shift.register.name, salesCount: shift.sales.length, subtotal: this.roundMoney(subtotal), discountTotal: this.roundMoney(discountTotal), taxTotal: this.roundMoney(taxTotal), total: this.roundMoney(grandTotal), paymentTotals: Object.entries(paymentTotals).map(([method, amount]) => ({ method, amount: this.roundMoney(amount), bukkuAccountId: paymentAccounts[method] ?? null })), lines: [...groupedItems.values()].map((row) => ({ ...row, quantity: Number(row.quantity.toFixed(4)), subtotal: this.roundMoney(row.subtotal), discount: this.roundMoney(row.discount), tax: this.roundMoney(row.tax), total: this.roundMoney(row.total) })) } };
+  }
+
+  async bukkuMappingOptions(input: ManagerRequestDto) {
+    await this.assertPermission(input, 'company.manage');
+    if (!this.bukku.isConfigured()) throw new BadRequestException('Bukku is not configured for this RetailOS server');
+    const [accountPayload, contactPayload, locationPayload] = await Promise.all([
+      this.bukku.get('/accounts?page=1&page_size=100') as Promise<{ accounts?: BukkuAccount[] }>,
+      this.bukku.get('/contacts?page=1&page_size=100') as Promise<{ contacts?: BukkuContact[] }>,
+      this.bukku.get('/locations?page=1&page_size=100') as Promise<{ locations?: BukkuLocation[] }>,
+    ]);
+    const accounts = this.flattenBukkuAccounts(accountPayload.accounts ?? [])
+      .filter((account) => account.id != null && !account.is_archived && !(account.children?.length))
+      .map((account) => ({ id: String(account.id), code: account.code ?? '', name: account.name ?? `Account ${account.id}`, type: account.type ?? '', systemType: account.system_type ?? '' }))
+      .sort((left, right) => `${left.code} ${left.name}`.localeCompare(`${right.code} ${right.name}`));
+    return {
+      accounts,
+      contacts: (contactPayload.contacts ?? []).filter((contact) => contact.id != null).map((contact) => ({ id: String(contact.id), code: contact.code ?? '', name: contact.display_name ?? contact.legal_name ?? `Contact ${contact.id}` })).sort((left, right) => left.name.localeCompare(right.name)),
+      locations: (locationPayload.locations ?? []).filter((location) => location.id != null).map((location) => ({ id: String(location.id), code: location.code ?? '', name: location.name ?? `Location ${location.id}` })),
+    };
+  }
+
+  private flattenBukkuAccounts(accounts: BukkuAccount[]): BukkuAccount[] {
+    return accounts.flatMap((account) => [account, ...this.flattenBukkuAccounts(account.children ?? [])]);
   }
 
   async listStaff(input: ManagerRequestDto) {
@@ -119,9 +158,10 @@ export class ManagementService {
   async listProducts(input: ManagerRequestDto, query?: string) {
     await this.assertPermission(input, 'catalog.manage');
     const term = query?.trim();
+    const normalizedTerm = term ? normalizeProductText(term) : null;
     const products = await this.db.product.findMany({
-      where: { companyId: input.companyId, ...(term ? { OR: [{ sku: { contains: term, mode: 'insensitive' } }, { name: { contains: term, mode: 'insensitive' } }, { barcodes: { some: { barcode: { contains: term, mode: 'insensitive' } } } }] } : {}) },
-      include: { uoms: { orderBy: [{ isBase: 'desc' }, { name: 'asc' }] }, barcodes: true, prices: { include: { priceLevel: true } }, purchasePrices: true },
+      where: { companyId: input.companyId, ...(term ? { OR: [{ sku: { contains: term, mode: 'insensitive' } }, { name: { contains: term, mode: 'insensitive' } }, { supplierDescription: { contains: term, mode: 'insensitive' } }, { category: { contains: term, mode: 'insensitive' } }, { barcodes: { some: { barcode: { contains: term, mode: 'insensitive' } } } }, { aliases: { some: { OR: [{ normalizedToken: { contains: normalizedTerm!.token } }, { normalizedCompact: { contains: normalizedTerm!.compact } }] } } }] } : {}) },
+      include: { uoms: { orderBy: [{ isBase: 'desc' }, { name: 'asc' }] }, barcodes: true, aliases: true, prices: { include: { priceLevel: true } }, purchasePrices: true },
       orderBy: { name: 'asc' }, take: 100,
     });
     const refs = await this.db.externalReference.findMany({ where: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: { in: products.map((product) => product.id) } }, select: { localId: true } });
@@ -131,7 +171,7 @@ export class ManagementService {
 
   async product(id: string, input: ManagerRequestDto) {
     await this.assertPermission(input, 'catalog.manage');
-    const product = await this.db.product.findFirst({ where: { id, companyId: input.companyId }, include: { uoms: { orderBy: [{ isBase: 'desc' }, { name: 'asc' }] }, barcodes: true, prices: { include: { priceLevel: true } }, purchasePrices: true } });
+    const product = await this.db.product.findFirst({ where: { id, companyId: input.companyId }, include: { uoms: { orderBy: [{ isBase: 'desc' }, { name: 'asc' }] }, barcodes: true, aliases: { orderBy: [{ source: 'asc' }, { text: 'asc' }] }, prices: { include: { priceLevel: true } }, purchasePrices: true } });
     if (!product) throw new NotFoundException('Product was not found');
     const ref = await this.db.externalReference.findFirst({ where: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: product.id } });
     return this.productView(product, Boolean(ref), ref?.externalId);
@@ -140,7 +180,7 @@ export class ManagementService {
   async updateProduct(id: string, input: UpdateManagedProductDto) {
     await this.assertPermission(input, 'catalog.manage');
     return this.db.$transaction(async (tx) => {
-      const product = await tx.product.findFirst({ where: { id, companyId: input.companyId }, include: { uoms: true, barcodes: true } });
+      const product = await tx.product.findFirst({ where: { id, companyId: input.companyId }, include: { uoms: true, barcodes: true, aliases: true } });
       if (!product) throw new NotFoundException('Product was not found');
       const name = input.name?.trim(); const sku = input.sku?.trim();
       if (sku && sku !== product.sku && await tx.product.findFirst({ where: { companyId: input.companyId, sku } })) throw new ConflictException('That SKU already exists');
@@ -150,6 +190,7 @@ export class ManagementService {
         const match = await tx.productBarcode.findUnique({ where: { barcode } });
         if (match && match.productId !== product.id) throw new ConflictException('That barcode already belongs to another product');
       }
+      const searchFields = structuredSearchFieldsForProduct([name ?? product.name, input.supplierDescription ?? product.supplierDescription, input.category ?? product.category, ...product.aliases.map((alias) => alias.text)]);
       const updated = await tx.product.update({ where: { id: product.id }, data: {
         ...(name !== undefined ? { name: name || product.name } : {}), ...(sku !== undefined ? { sku: sku || product.sku } : {}),
         ...(input.classificationCode !== undefined ? { classificationCode: input.classificationCode.trim() || null } : {}),
@@ -157,8 +198,10 @@ export class ManagementService {
         ...(input.supplierName !== undefined ? { supplierName: input.supplierName.trim() || null } : {}),
         ...(input.lastPurchasedAt !== undefined ? { lastPurchasedAt: input.lastPurchasedAt ? new Date(input.lastPurchasedAt) : null } : {}),
         ...(input.category !== undefined ? { category: input.category.trim() || null } : {}),
+        ...searchFields,
         ...(input.trackStock !== undefined ? { trackStock: input.trackStock } : {}), ...(input.active !== undefined ? { active: input.active } : {}),
       } });
+      await this.refreshGeneratedAliases(tx, product.id, [updated.name, updated.supplierDescription, updated.category]);
       if (input.barcode !== undefined) {
         if (barcode) {
           const base = product.uoms.find((uom) => uom.isBase) ?? product.uoms[0];
@@ -183,6 +226,83 @@ export class ManagementService {
     });
   }
 
+  async productDeleteImpact(id: string, input: ManagerRequestDto) {
+    await this.assertPermission(input, 'catalog.manage');
+    const product = await this.db.product.findFirst({ where: { id, companyId: input.companyId }, select: { id: true, name: true, sku: true, active: true, deletedAt: true } });
+    if (!product) throw new NotFoundException('Product was not found');
+    return { product: { id: product.id, name: product.name, sku: product.sku, status: product.deletedAt ? 'Deleted' : product.active ? 'Active' : 'Deactivated' }, ...(await this.productHistoryImpact(input.companyId, id)) };
+  }
+
+  async setProductActive(id: string, active: boolean, input: ProductLifecycleDto) {
+    await this.assertPermission(input, 'catalog.manage');
+    if (!input.confirmed) throw new BadRequestException(`Confirm that you want to ${active ? 'reactivate' : 'deactivate'} this product`);
+    return this.db.$transaction(async (tx) => {
+      const product = await tx.product.findFirst({ where: { id, companyId: input.companyId } });
+      if (!product) throw new NotFoundException('Product was not found');
+      const updated = await tx.product.update({ where: { id }, data: { active, ...(active ? { deletedAt: null } : {}) } });
+      await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: active ? 'PRODUCT_REACTIVATED' : 'PRODUCT_DEACTIVATED', entityType: 'Product', entityId: id, before: { active: product.active, deletedAt: product.deletedAt }, after: { active: updated.active, deletedAt: updated.deletedAt } } });
+      return { id, sku: updated.sku, name: updated.name, status: updated.deletedAt ? 'Deleted' : updated.active ? 'Active' : 'Deactivated' };
+    });
+  }
+
+  async deleteProduct(id: string, input: DeleteManagedProductDto) {
+    await this.assertPermission(input, 'catalog.manage');
+    if (!input.confirmed) throw new BadRequestException('Explicit manager confirmation is required before deleting or archiving a product');
+    const product = await this.db.product.findFirst({ where: { id, companyId: input.companyId } });
+    if (!product) throw new NotFoundException('Product was not found');
+    const impact = await this.productHistoryImpact(input.companyId, id);
+    if (input.hardDelete && !impact.hardDeleteAllowed) throw new UnprocessableEntityException('Hard delete is not allowed because this product has history. Archive it instead');
+    if (!impact.hardDeleteAllowed) {
+      const deletedAt = new Date();
+      await this.db.$transaction([
+        this.db.product.update({ where: { id }, data: { active: false, deletedAt } }),
+        this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'PRODUCT_ARCHIVED', entityType: 'Product', entityId: id, before: { name: product.name, sku: product.sku, active: product.active, deletedAt: product.deletedAt }, after: { name: product.name, sku: product.sku, active: false, deletedAt, relatedRecords: impact.relatedRecords } } }),
+      ]);
+      return { id, name: product.name, sku: product.sku, status: 'Deleted', mode: 'ARCHIVED', reversible: true, relatedRecords: impact.relatedRecords };
+    }
+    await this.db.$transaction(async (tx) => {
+      await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'PRODUCT_HARD_DELETED', entityType: 'Product', entityId: id, before: { name: product.name, sku: product.sku }, metadata: { unusedProduct: true } } });
+      await tx.product.delete({ where: { id } });
+    });
+    return { id, name: product.name, sku: product.sku, status: 'Deleted', mode: 'HARD_DELETE', reversible: false };
+  }
+
+  async addProductAlias(id: string, input: CreateProductAliasDto) {
+    await this.assertPermission(input, 'catalog.manage');
+    const product = await this.db.product.findFirst({ where: { id, companyId: input.companyId }, select: { id: true, name: true, supplierDescription: true, category: true, searchDimensions: true, searchMaterials: true, searchProductTypes: true } });
+    if (!product) throw new NotFoundException('Product was not found');
+    const text = input.text.normalize('NFKC').trim().replace(/\s+/g, ' ');
+    const normalized = normalizeProductText(text);
+    if (!normalized.token) throw new BadRequestException('Enter an alias containing letters or numbers');
+    try {
+      const alias = await this.db.productAlias.create({ data: { productId: id, text, normalizedToken: normalized.token, normalizedCompact: normalized.compact, source: 'MANUAL', createdById: input.actorId } });
+      const aliasFields = structuredSearchFieldsForProduct([text]);
+      await this.db.product.update({ where: { id }, data: {
+        searchDimensions: [...new Set([...(product.searchDimensions ?? []), ...aliasFields.searchDimensions])],
+        searchMaterials: [...new Set([...(product.searchMaterials ?? []), ...aliasFields.searchMaterials])],
+        searchProductTypes: [...new Set([...(product.searchProductTypes ?? []), ...aliasFields.searchProductTypes])],
+      } });
+      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'PRODUCT_ALIAS_CREATED', entityType: 'ProductAlias', entityId: alias.id, after: { productId: id, text, source: 'MANUAL' } } });
+      return alias;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('This product already has the same normalized alias');
+      throw error;
+    }
+  }
+
+  async deleteProductAlias(id: string, aliasId: string, input: ManagerRequestDto) {
+    await this.assertPermission(input, 'catalog.manage');
+    const alias = await this.db.productAlias.findFirst({ where: { id: aliasId, productId: id, product: { companyId: input.companyId } } });
+    if (!alias) throw new NotFoundException('Product alias was not found');
+    if (alias.source === 'GENERATED') throw new BadRequestException('Generated aliases are maintained from product master data');
+    await this.db.$transaction([
+      this.db.productAlias.delete({ where: { id: alias.id } }),
+      this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'PRODUCT_ALIAS_DELETED', entityType: 'ProductAlias', entityId: alias.id, before: { productId: id, text: alias.text, source: alias.source } } }),
+    ]);
+    await this.rebuildProductSearchFields(id);
+    return { deleted: true };
+  }
+
   async createProduct(input: CreateManagedProductDto) {
     await this.assertPermission(input, 'catalog.manage');
     if (!input.uoms?.length) throw new BadRequestException('Add at least one selling unit');
@@ -196,7 +316,9 @@ export class ManagementService {
       if (sameName) throw new ConflictException(`An item with this product name already exists (SKU: ${sameName.sku})`);
       if (input.barcode?.trim() && await tx.productBarcode.findUnique({ where: { barcode: input.barcode.trim() } })) throw new ConflictException('That barcode already exists');
       const retail = await tx.priceLevel.upsert({ where: { companyId_code: { companyId: input.companyId, code: 'RETAIL' } }, update: { name: 'Retail' }, create: { companyId: input.companyId, code: 'RETAIL', name: 'Retail' } });
-      const product = await tx.product.create({ data: { companyId: input.companyId, name: input.name.trim(), sku: input.sku.trim(), classificationCode: input.classificationCode?.trim(), supplierDescription: input.supplierDescription?.trim(), supplierName: input.supplierName?.trim(), lastPurchasedAt: input.lastPurchasedAt ? new Date(input.lastPurchasedAt) : undefined, category: input.category?.trim(), trackStock: input.trackStock ?? true, uoms: { create: normalizedUnits.map((unit) => ({ code: unit.code, name: unit.name, conversionFactor: unit.conversionFactor, isBase: Math.abs(unit.conversionFactor - 1) < 0.000001 })) } } });
+      const searchFields = structuredSearchFieldsForProduct([input.name, input.supplierDescription, input.category]);
+      const product = await tx.product.create({ data: { companyId: input.companyId, name: input.name.trim(), sku: input.sku.trim(), classificationCode: input.classificationCode?.trim(), supplierDescription: input.supplierDescription?.trim(), supplierName: input.supplierName?.trim(), lastPurchasedAt: input.lastPurchasedAt ? new Date(input.lastPurchasedAt) : undefined, category: input.category?.trim(), trackStock: input.trackStock ?? true, fifoEnabledAt: input.initialQuantity ? null : new Date(), ...searchFields, uoms: { create: normalizedUnits.map((unit) => ({ code: unit.code, name: unit.name, conversionFactor: unit.conversionFactor, isBase: Math.abs(unit.conversionFactor - 1) < 0.000001 })) } } });
+      await this.refreshGeneratedAliases(tx, product.id, [product.name, product.supplierDescription, product.category]);
       const uoms = await tx.productUOM.findMany({ where: { productId: product.id } });
       await tx.productPrice.createMany({ data: normalizedUnits.map((unit) => ({ productId: product.id, priceLevelId: retail.id, uomId: uoms.find((row) => row.code === unit.code)!.id, amount: unit.salePrice })) });
       const purchaseRows = normalizedUnits.filter((unit) => unit.purchasePrice !== undefined).map((unit) => ({ productId: product.id, uomId: uoms.find((row) => row.code === unit.code)!.id, amount: unit.purchasePrice! }));
@@ -208,7 +330,11 @@ export class ManagementService {
         if (!input.locationId) throw new BadRequestException('Choose a store before setting initial quantity');
         const location = await tx.location.findFirst({ where: { id: input.locationId, companyId: input.companyId } });
         if (!location) throw new NotFoundException('Store was not found');
-        await tx.stockSnapshot.create({ data: { productId: product.id, locationId: location.id, quantity: input.initialQuantity } });
+        const snapshot = await tx.stockSnapshot.create({ data: { productId: product.id, locationId: location.id, quantity: input.initialQuantity } });
+        const unitCost = base.purchasePrice == null ? null : new Prisma.Decimal(base.purchasePrice);
+        const quantity = new Prisma.Decimal(input.initialQuantity);
+        await recordInventoryLedger(tx, { companyId: input.companyId, locationId: location.id, productId: product.id, actorId: input.actorId, sourceType: 'OPENING_BALANCE', type: 'ADJUSTMENT', quantityDelta: quantity, unitCost, valueDelta: unitCost == null ? null : quantity.mul(unitCost), runningQuantity: quantity, runningValue: unitCost == null ? null : quantity.mul(unitCost), averageUnitCost: unitCost, costStatus: unitCost == null ? 'UNVALUED' : 'FINAL', referenceType: 'INITIAL_STOCK', referenceId: snapshot.id, reason: 'Initial stock entered when product was created' });
+        await tx.inventoryBatch.create({ data: { id: `legacy-${product.id}-${location.id}`, companyId: input.companyId, locationId: location.id, productId: product.id, uomId: uoms.find((row) => row.code === base.code)!.id, displayBatchId: `LEGACY-${product.sku}-${location.code}`, receivedQuantity: quantity, remainingQuantity: quantity, purchaseUnitCost: unitCost, landedCostPerUnit: 0, finalUnitCost: unitCost, totalBatchValue: unitCost == null ? null : quantity.mul(unitCost), receivedAt: new Date(), status: 'DRAFT', sourceType: 'OPENING_LEGACY', importedById: input.actorId } });
       }
       await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'LOCAL_PRODUCT_CREATED', entityType: 'Product', entityId: product.id, after: { sku: product.sku, name: product.name, localOnly: true } } });
       return { id: product.id, sku: product.sku, name: product.name, source: 'LOCAL', note: 'This item is local only until a Bukku product-write mapping is verified.' };
@@ -250,7 +376,27 @@ export class ManagementService {
   }
 
   private productView(product: ManagedProduct, imported: boolean, externalId?: string) {
-    return { id: product.id, sku: product.sku, name: product.name, barcode: product.barcodes[0]?.barcode ?? null, classificationCode: product.classificationCode, supplierDescription: product.supplierDescription, supplierName: product.supplierName, lastPurchasedAt: product.lastPurchasedAt, category: product.category, active: product.active, trackStock: product.trackStock, basePurchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost), source: imported ? 'BUKKU' : 'LOCAL', externalId: externalId ?? null, uoms: product.uoms.map((uom) => ({ id: uom.id, code: uom.code, name: uom.name, conversionFactor: Number(uom.conversionFactor), salePrice: product.prices.find((price) => price.uomId === uom.id && price.priceLevel.code === 'RETAIL')?.amount == null ? null : Number(product.prices.find((price) => price.uomId === uom.id && price.priceLevel.code === 'RETAIL')!.amount), purchasePrice: product.purchasePrices.find((price) => price.uomId === uom.id)?.amount == null ? null : Number(product.purchasePrices.find((price) => price.uomId === uom.id)?.amount) })) };
+    return { id: product.id, sku: product.sku, name: product.name, barcode: product.barcodes[0]?.barcode ?? null, aliases: product.aliases.map((alias) => ({ id: alias.id, text: alias.text, source: alias.source })), classificationCode: product.classificationCode, supplierDescription: product.supplierDescription, supplierName: product.supplierName, lastPurchasedAt: product.lastPurchasedAt, category: product.category, active: product.active, deletedAt: product.deletedAt, status: product.deletedAt ? 'Deleted' : product.active ? 'Active' : 'Deactivated', trackStock: product.trackStock, basePurchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost), source: imported ? 'BUKKU' : 'LOCAL', externalId: externalId ?? null, uoms: product.uoms.map((uom) => ({ id: uom.id, code: uom.code, name: uom.name, conversionFactor: Number(uom.conversionFactor), salePrice: product.prices.find((price) => price.uomId === uom.id && price.priceLevel.code === 'RETAIL')?.amount == null ? null : Number(product.prices.find((price) => price.uomId === uom.id && price.priceLevel.code === 'RETAIL')!.amount), purchasePrice: product.purchasePrices.find((price) => price.uomId === uom.id)?.amount == null ? null : Number(product.purchasePrices.find((price) => price.uomId === uom.id)?.amount) })) };
+  }
+
+  private async productHistoryImpact(companyId: string, productId: string) {
+    const [sales, returns, stockMovements, stockSnapshots, inventoryBatches, aliases, bukkuReferences, batchRows, auditHistory] = await Promise.all([
+      this.db.saleItem.count({ where: { productId } }), this.db.returnItem.count({ where: { productId } }), this.db.inventoryLedgerEntry.count({ where: { productId } }), this.db.stockSnapshot.count({ where: { productId } }), this.db.inventoryBatch.count({ where: { productId } }), this.db.productAlias.count({ where: { productId } }), this.db.externalReference.count({ where: { companyId, entityType: 'PRODUCT', localId: productId } }), this.db.batchUpdateRow.count({ where: { productId } }), this.db.auditLog.count({ where: { companyId, entityType: 'Product', entityId: productId, action: { notIn: ['LOCAL_PRODUCT_CREATED', 'PRODUCT_CREATED'] } } }),
+    ]);
+    const relatedRecords = { sales, returns, stockMovements, stockSnapshots, inventoryBatches, aliases, bukkuReferences, batchRows, auditHistory }; const totalRelatedRecords = Object.values(relatedRecords).reduce((sum, count) => sum + count, 0);
+    return { hardDeleteAllowed: totalRelatedRecords === 0, recommendedAction: 'DEACTIVATE', deleteAction: totalRelatedRecords === 0 ? 'HARD_DELETE' : 'ARCHIVE', totalRelatedRecords, relatedRecords };
+  }
+
+  private async refreshGeneratedAliases(tx: Prisma.TransactionClient, productId: string, values: Array<string | null | undefined>) {
+    const aliases = generatedAliasesForProduct(values);
+    await tx.productAlias.deleteMany({ where: { productId, source: 'GENERATED' } });
+    if (aliases.length) await tx.productAlias.createMany({ data: aliases.map((text) => { const normalized = normalizeProductText(text); return { productId, text, normalizedToken: normalized.token, normalizedCompact: normalized.compact, source: 'GENERATED' as const }; }), skipDuplicates: true });
+  }
+
+  private async rebuildProductSearchFields(productId: string) {
+    const product = await this.db.product.findUnique({ where: { id: productId }, include: { aliases: { select: { text: true } } } });
+    if (!product) return;
+    await this.db.product.update({ where: { id: product.id }, data: structuredSearchFieldsForProduct([product.name, product.supplierDescription, product.category, ...product.aliases.map((alias) => alias.text)]) });
   }
 
   private async nextContactCode(companyId: string, name: string) {
@@ -269,7 +415,7 @@ export class ManagementService {
 
   private roundMoney(value: number) { return Number(value.toFixed(2)); }
 
-  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string; printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number; customerEInvoiceRequestsEnabled: boolean; bukkuDailyInvoiceEnabled: boolean; bukkuDailyInvoiceContactId: string | null; bukkuDailyInvoiceLocationId: string | null; bukkuDailyInvoiceRevenueAccountId: string | null; bukkuDailyInvoiceTaxCodeId: string | null; bukkuDailyInvoicePaymentAccounts: Prisma.JsonValue | null }) {
-    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod, printerLanHost: company.printerLanHost, printerLanPort: company.printerLanPort, printerWindowsQueue: company.printerWindowsQueue, printerSerialPort: company.printerSerialPort, printerSerialBaudRate: company.printerSerialBaudRate, customerEInvoiceRequestsEnabled: company.customerEInvoiceRequestsEnabled, bukkuDailyInvoiceEnabled: company.bukkuDailyInvoiceEnabled, bukkuDailyInvoiceContactId: company.bukkuDailyInvoiceContactId, bukkuDailyInvoiceLocationId: company.bukkuDailyInvoiceLocationId, bukkuDailyInvoiceRevenueAccountId: company.bukkuDailyInvoiceRevenueAccountId, bukkuDailyInvoiceTaxCodeId: company.bukkuDailyInvoiceTaxCodeId, bukkuDailyInvoicePaymentAccounts: company.bukkuDailyInvoicePaymentAccounts };
+  private profileView(company: { id: string; name: string; code: string; legalName: string | null; registrationNo: string | null; tin: string | null; brnNew: string | null; brnOld: string | null; address: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; printerConnectionMethod: string; printerLanHost: string | null; printerLanPort: number; printerWindowsQueue: string | null; printerSerialPort: string | null; printerSerialBaudRate: number; printerProfileName: string; printerFallbackMethod: string | null; printerFallbackLanHost: string | null; printerFallbackLanPort: number | null; receiptTemplate: string; receiptDividerStyle: string; receiptShowLogo: boolean; receiptShowSku: boolean; receiptChineseMode: string; customerEInvoiceRequestsEnabled: boolean; bukkuDailyInvoiceEnabled: boolean; bukkuDailyInvoiceContactId: string | null; bukkuDailyInvoiceLocationId: string | null; bukkuDailyInvoiceRevenueAccountId: string | null; bukkuDailyInvoiceTaxCodeId: string | null; bukkuDailyInvoicePaymentAccounts: Prisma.JsonValue | null }) {
+    return { id: company.id, name: company.name, code: company.code, legalName: company.legalName, registrationNo: company.registrationNo, tin: company.tin, brnNew: company.brnNew, brnOld: company.brnOld, address: company.address, officePhone: company.officePhone, phone: company.phone, email: company.email, receiptFooter: company.receiptFooter, receiptPaperWidthMm: company.receiptPaperWidthMm, printerConnectionMethod: company.printerConnectionMethod, printerLanHost: company.printerLanHost, printerLanPort: company.printerLanPort, printerWindowsQueue: company.printerWindowsQueue, printerSerialPort: company.printerSerialPort, printerSerialBaudRate: company.printerSerialBaudRate, printerProfileName: company.printerProfileName, printerFallbackMethod: company.printerFallbackMethod, printerFallbackLanHost: company.printerFallbackLanHost, printerFallbackLanPort: company.printerFallbackLanPort, receiptTemplate: company.receiptTemplate, receiptDividerStyle: company.receiptDividerStyle, receiptShowLogo: company.receiptShowLogo, receiptShowSku: company.receiptShowSku, receiptChineseMode: company.receiptChineseMode, customerEInvoiceRequestsEnabled: company.customerEInvoiceRequestsEnabled, bukkuDailyInvoiceEnabled: company.bukkuDailyInvoiceEnabled, bukkuDailyInvoiceContactId: company.bukkuDailyInvoiceContactId, bukkuDailyInvoiceLocationId: company.bukkuDailyInvoiceLocationId, bukkuDailyInvoiceRevenueAccountId: company.bukkuDailyInvoiceRevenueAccountId, bukkuDailyInvoiceTaxCodeId: company.bukkuDailyInvoiceTaxCodeId, bukkuDailyInvoicePaymentAccounts: company.bukkuDailyInvoicePaymentAccounts };
   }
 }

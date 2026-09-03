@@ -44,7 +44,7 @@ function sheetXml(sheet: XlsxSheet) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>${widths}</cols><sheetData>${rows}</sheetData><autoFilter ref="A1:${column(Math.max(0, (sheet.rows[0]?.length ?? 1) - 1))}${Math.max(1, sheet.rows.length)}"/></worksheet>`;
 }
 
-export async function writeXlsx(filePath: string, sheets: XlsxSheet[]) {
+export function createXlsx(sheets: XlsxSheet[]) {
   const files = [
     { name: '[Content_Types].xml', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
     { name: '_rels/.rels', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
@@ -53,6 +53,10 @@ export async function writeXlsx(filePath: string, sheets: XlsxSheet[]) {
     { name: 'xl/styles.xml', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Aptos"/></font><font><b/><sz val="10"/><name val="Aptos"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="4"><xf xfId="0" fontId="0"/><xf xfId="0" fontId="1" applyFont="1"/><xf xfId="0" numFmtId="22" applyNumberFormat="1"/><xf xfId="0" numFmtId="4" applyNumberFormat="1"/></cellXfs></styleSheet>` },
     ...sheets.map((sheet, index) => ({ name: `xl/worksheets/sheet${index + 1}.xml`, content: sheetXml(sheet) })),
   ];
+  return zip(files);
+}
+
+export async function writeXlsx(filePath: string, sheets: XlsxSheet[]) {
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, zip(files));
+  await writeFile(filePath, createXlsx(sheets));
 }

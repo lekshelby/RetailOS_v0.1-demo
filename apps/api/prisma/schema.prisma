@@ -80,6 +80,37 @@ enum CashMovementType {
   CASH_OUT
 }
 
+enum PrintJobStatus {
+  QUEUED
+  SENDING
+  PRINTED
+  FAILED
+  RETRYING
+}
+
+enum InventoryLedgerType {
+  SALE
+  RETURN
+  VOID
+  ADJUSTMENT
+}
+
+enum InventoryCostStatus {
+  FINAL
+  PROVISIONAL
+  UNVALUED
+}
+
+enum InventorySourceType {
+  BUKKU_PURCHASE
+  STAFF_COUNT
+  STAFF_ADJUSTMENT
+  POS_SALE
+  RETURN
+  TRANSFER
+  OPENING_BALANCE
+}
+
 model Company {
   id String @id @default(cuid())
   name String
@@ -103,6 +134,15 @@ model Company {
   printerWindowsQueue String?
   printerSerialPort String?
   printerSerialBaudRate Int @default(9600)
+  printerProfileName String @default("Main receipt printer")
+  printerFallbackMethod String?
+  printerFallbackLanHost String?
+  printerFallbackLanPort Int?
+  receiptTemplate String @default("STANDARD")
+  receiptDividerStyle String @default("DASHED")
+  receiptShowLogo Boolean @default(false)
+  receiptShowSku Boolean @default(false)
+  receiptChineseMode String @default("AUTO")
   customerEInvoiceRequestsEnabled Boolean @default(true)
   bukkuDailyInvoiceEnabled Boolean @default(false)
   bukkuDailyInvoiceContactId String?
@@ -126,6 +166,12 @@ model Company {
   auditLogs AuditLog[]
   references ExternalReference[]
   roles Role[]
+  printJobs PrintJob[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  batchUpdates BatchUpdate[]
+  purchaseReceipts PurchaseReceipt[]
+  inventoryBatches InventoryBatch[]
+  inventoryBatchEvents InventoryBatchEvent[]
 }
 
 model Location {
@@ -139,6 +185,10 @@ model Location {
   shifts Shift[]
   sales Sale[]
   receiptCounters ReceiptCounter[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  batchUpdateRows BatchUpdateRow[]
+  purchaseReceipts PurchaseReceipt[]
+  inventoryBatches InventoryBatch[]
   @@unique([companyId, code])
 }
 
@@ -177,6 +227,18 @@ model User {
   shifts Shift[]
   auditLogs AuditLog[]
   approvals DiscountOverride[] @relation("DiscountApprover")
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  inventoryLedgerApprovals InventoryLedgerEntry[] @relation("InventoryLedgerApprover")
+  batchUpdatesCreated BatchUpdate[] @relation("BatchCreatedBy")
+  batchUpdatesConfirmed BatchUpdate[] @relation("BatchConfirmedBy")
+  batchUpdatesApproved BatchUpdate[] @relation("BatchApprovedBy")
+  productAliasesCreated ProductAlias[]
+  purchaseReceiptsImported PurchaseReceipt[] @relation("PurchaseReceiptImporter")
+  purchaseReceiptsApproved PurchaseReceipt[] @relation("PurchaseReceiptApprover")
+  inventoryBatchesImported InventoryBatch[] @relation("InventoryBatchImporter")
+  inventoryBatchesApproved InventoryBatch[] @relation("InventoryBatchApprover")
+  inventoryBatchEvents InventoryBatchEvent[] @relation("InventoryBatchEventActor")
+  inventoryBatchEventApprovals InventoryBatchEvent[] @relation("InventoryBatchEventApprover")
   @@unique([companyId, email])
 }
 
@@ -191,11 +253,17 @@ model Product {
   lastPurchasedAt DateTime?
   nominalLengthMeters Decimal? @db.Decimal(8, 3)
   basePurchaseCost Decimal? @db.Decimal(14, 2)
+  fifoEnabledAt DateTime?
   category String?
+  reorderLevel Decimal? @db.Decimal(14, 4)
   classificationCode String?
   bukkuType String?
   bukkuCatalogHash String?
+  searchDimensions String[] @default([])
+  searchMaterials String[] @default([])
+  searchProductTypes String[] @default([])
   active Boolean @default(true)
+  deletedAt DateTime?
   trackStock Boolean @default(true)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   uoms ProductUOM[]
@@ -205,8 +273,15 @@ model Product {
   saleItems SaleItem[]
   returnItems ReturnItem[]
   stockSnapshots StockSnapshot[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  batchUpdateRows BatchUpdateRow[]
+  aliases ProductAlias[]
+  inventoryBatches InventoryBatch[]
   @@unique([companyId, sku])
   @@index([companyId, name])
+  @@index([searchDimensions], type: Gin)
+  @@index([searchMaterials], type: Gin)
+  @@index([searchProductTypes], type: Gin)
 }
 
 model ProductUOM {
@@ -222,6 +297,8 @@ model ProductUOM {
   purchasePrices ProductPurchasePrice[]
   saleItems SaleItem[]
   returnItems ReturnItem[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  inventoryBatches InventoryBatch[]
   @@unique([productId, code])
 }
 
@@ -316,6 +393,7 @@ model Sale {
     completedAt DateTime?
   printedAt DateTime?
   eInvoiceRequestToken String? @unique
+  receiptSnapshot Json?
     createdAt DateTime @default(now())
   company Company @relation(fields: [companyId], references: [id])
   location Location @relation(fields: [locationId], references: [id])
@@ -330,9 +408,57 @@ model Sale {
   returns Return[]
   exchangeReplacement Return? @relation("ExchangeReplacementSale")
   eInvoiceRequests EInvoiceRequest[]
+  printJobs PrintJob[]
   @@unique([companyId, receiptNo])
   @@unique([companyId, offlineId])
   @@index([companyId, completedAt])
+}
+
+enum ProductAliasSource {
+  MANUAL
+  IMPORT
+  GENERATED
+}
+
+model ProductAlias {
+  id String @id @default(cuid())
+  productId String
+  text String
+  normalizedToken String
+  normalizedCompact String
+  source ProductAliasSource
+  createdById String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  @@unique([productId, normalizedToken])
+  @@index([normalizedToken])
+  @@index([normalizedCompact])
+  @@index([productId, source])
+}
+
+model PrintJob {
+  id String @id @default(cuid())
+  companyId String
+  saleId String?
+  shiftId String?
+  printerProfile String
+  transport String
+  status PrintJobStatus @default(QUEUED)
+  kind String
+  reprint Boolean @default(false)
+  attempts Int @default(0)
+  lastError String?
+  queuedAt DateTime @default(now())
+  sendingAt DateTime?
+  printedAt DateTime?
+  failedAt DateTime?
+  createdById String?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sale Sale? @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  @@index([companyId, status, queuedAt])
+  @@index([saleId, queuedAt])
 }
 
 model EInvoiceRequest {
@@ -369,11 +495,16 @@ model SaleItem {
   lineDiscount Decimal @db.Decimal(14, 2)
   taxAmount Decimal @db.Decimal(14, 2)
   lineTotal Decimal @db.Decimal(14, 2)
+  unitCost Decimal? @db.Decimal(16, 4)
+  cogs Decimal? @db.Decimal(16, 4)
+  costStatus InventoryCostStatus @default(UNVALUED)
   sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
   uom ProductUOM @relation(fields: [uomId], references: [id])
   discounts DiscountOverride[]
   returns ReturnItem[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  batchAllocations SaleBatchAllocation[]
 }
 
 model Payment {
@@ -438,6 +569,8 @@ model ReturnItem {
   saleItem SaleItem? @relation(fields: [saleItemId], references: [id])
   product Product @relation(fields: [productId], references: [id])
   uom ProductUOM @relation(fields: [uomId], references: [id])
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  batchAllocations SaleBatchAllocation[]
 }
 
 model ReturnPayment {
@@ -501,6 +634,208 @@ model StockSnapshot {
   location Location @relation(fields: [locationId], references: [id])
   product Product @relation(fields: [productId], references: [id])
   @@unique([locationId, productId])
+}
+
+model InventoryLedgerEntry {
+  id String @id @default(cuid())
+  companyId String
+  locationId String
+  productId String
+  saleItemId String?
+  returnItemId String?
+  actorId String?
+  approvedById String?
+  uomId String?
+  type InventoryLedgerType
+  sourceType InventorySourceType
+  quantityDelta Decimal @db.Decimal(14, 4)
+  countedQuantity Decimal? @db.Decimal(14, 4)
+  beforeQuantity Decimal @db.Decimal(14, 4)
+  unitCost Decimal? @db.Decimal(16, 4)
+  valueDelta Decimal? @db.Decimal(18, 4)
+  runningQuantity Decimal @db.Decimal(14, 4)
+  runningValue Decimal? @db.Decimal(18, 4)
+  averageUnitCost Decimal? @db.Decimal(16, 4)
+  costStatus InventoryCostStatus
+  referenceType String
+  referenceId String
+  reason String?
+  batchId String?
+  batchRowId String? @unique
+  createdAt DateTime @default(now())
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  saleItem SaleItem? @relation(fields: [saleItemId], references: [id], onDelete: SetNull)
+  returnItem ReturnItem? @relation(fields: [returnItemId], references: [id], onDelete: SetNull)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("InventoryLedgerApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  uom ProductUOM? @relation(fields: [uomId], references: [id], onDelete: SetNull)
+  batch BatchUpdate? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  batchRow BatchUpdateRow? @relation(fields: [batchRowId], references: [id], onDelete: SetNull)
+  @@unique([referenceType, referenceId, productId])
+  @@index([companyId, createdAt])
+  @@index([locationId, productId, createdAt])
+  @@index([costStatus, createdAt])
+  @@index([batchId])
+}
+
+model BatchUpdate {
+  id String @id
+  companyId String
+  type String
+  checksum String
+  fileName String
+  mimeType String
+  rawFile Bytes
+  status String @default("PREVIEWED")
+  createdById String
+  confirmedById String?
+  approvedById String?
+  rowCount Int
+  validRowCount Int
+  invalidRowCount Int
+  duplicateRowCount Int
+  highRisk Boolean @default(false)
+  summary Json?
+  createdAt DateTime @default(now())
+  committedAt DateTime?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User @relation("BatchCreatedBy", fields: [createdById], references: [id])
+  confirmedBy User? @relation("BatchConfirmedBy", fields: [confirmedById], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("BatchApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  rows BatchUpdateRow[]
+  ledgerEntries InventoryLedgerEntry[]
+  @@unique([companyId, type, checksum])
+  @@index([companyId, createdAt])
+}
+
+model BatchUpdateRow {
+  id String @id
+  batchId String
+  rowNumber Int
+  productId String?
+  locationId String?
+  input Json
+  valid Boolean
+  duplicate Boolean @default(false)
+  errors String[] @default([])
+  beforeQuantity Decimal? @db.Decimal(14, 4)
+  requestedQuantity Decimal? @db.Decimal(14, 4)
+  afterQuantity Decimal? @db.Decimal(14, 4)
+  beforeValue Decimal? @db.Decimal(18, 4)
+  afterValue Decimal? @db.Decimal(18, 4)
+  costStatus String?
+  result Json?
+  createdAt DateTime @default(now())
+  batch BatchUpdate @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  location Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  ledgerEntry InventoryLedgerEntry?
+  @@unique([batchId, rowNumber])
+  @@index([productId, locationId])
+}
+
+model PurchaseReceipt {
+  id String @id
+  companyId String
+  locationId String
+  bukkuReference String
+  supplier String
+  purchaseDate DateTime @db.Date
+  status String @default("DRAFT")
+  sourceFileName String?
+  batchId String?
+  importedById String
+  approvedById String?
+  negativeStockAcknowledged Boolean @default(false)
+  createdAt DateTime @default(now())
+  postedAt DateTime?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id])
+  importedBy User @relation("PurchaseReceiptImporter", fields: [importedById], references: [id])
+  approvedBy User? @relation("PurchaseReceiptApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  batches InventoryBatch[]
+  @@unique([companyId, bukkuReference])
+  @@index([companyId, status, createdAt])
+}
+
+model InventoryBatch {
+  id String @id
+  companyId String
+  locationId String
+  purchaseReceiptId String?
+  productId String
+  uomId String
+  displayBatchId String
+  bukkuReference String?
+  supplier String?
+  receivedQuantity Decimal @db.Decimal(14, 4)
+  remainingQuantity Decimal @db.Decimal(14, 4)
+  purchaseUnitCost Decimal? @db.Decimal(16, 4)
+  landedCostPerUnit Decimal @default(0) @db.Decimal(16, 4)
+  finalUnitCost Decimal? @db.Decimal(16, 4)
+  totalBatchValue Decimal? @db.Decimal(18, 4)
+  billDate DateTime? @db.Date
+  receivedAt DateTime
+  status String @default("DRAFT")
+  sourceType String
+  importedById String?
+  approvedById String?
+  postedAt DateTime?
+  voidedAt DateTime?
+  createdAt DateTime @default(now())
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id])
+  purchaseReceipt PurchaseReceipt? @relation(fields: [purchaseReceiptId], references: [id], onDelete: SetNull)
+  product Product @relation(fields: [productId], references: [id])
+  uom ProductUOM @relation(fields: [uomId], references: [id])
+  importedBy User? @relation("InventoryBatchImporter", fields: [importedById], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("InventoryBatchApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  events InventoryBatchEvent[]
+  saleAllocations SaleBatchAllocation[]
+  @@unique([companyId, locationId, displayBatchId, productId])
+  @@index([productId, createdAt])
+  @@index([companyId, locationId, productId, status, receivedAt])
+}
+
+model InventoryBatchEvent {
+  id String @id
+  companyId String
+  inventoryBatchId String
+  type String
+  quantityDelta Decimal @db.Decimal(14, 4)
+  beforeRemaining Decimal @db.Decimal(14, 4)
+  afterRemaining Decimal @db.Decimal(14, 4)
+  actorId String?
+  approvedById String?
+  reason String?
+  referenceType String
+  referenceId String
+  createdAt DateTime @default(now())
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  inventoryBatch InventoryBatch @relation(fields: [inventoryBatchId], references: [id], onDelete: Cascade)
+  actor User? @relation("InventoryBatchEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("InventoryBatchEventApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  @@index([inventoryBatchId, createdAt])
+  @@unique([referenceType, referenceId, inventoryBatchId, type])
+}
+
+model SaleBatchAllocation {
+  id String @id
+  saleItemId String
+  returnItemId String?
+  inventoryBatchId String
+  type String
+  quantity Decimal @db.Decimal(14, 4)
+  unitCost Decimal? @db.Decimal(16, 4)
+  cogs Decimal? @db.Decimal(18, 4)
+  createdAt DateTime @default(now())
+  saleItem SaleItem @relation(fields: [saleItemId], references: [id])
+  returnItem ReturnItem? @relation(fields: [returnItemId], references: [id])
+  inventoryBatch InventoryBatch @relation(fields: [inventoryBatchId], references: [id])
+  @@index([saleItemId, createdAt])
+  @@index([inventoryBatchId, createdAt])
 }
 
 model ReceiptCounter {

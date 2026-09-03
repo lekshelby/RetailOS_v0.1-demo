@@ -34,7 +34,7 @@
   .line-actions button { min-height: 38px; padding: 7px 10px; }
   .line-total { grid-column: 1 / -1; text-align: right; font-size: 17px; }
   .grand { font-size: 23px; }
-  .pay { min-height: 54px; position: sticky; bottom: 8px; box-shadow: 0 5px 16px #14302038; }
+  .pay { min-height: 54px; position: static; bottom: auto; box-shadow: none; }
 
   .duitnow-payment, .bank-transfer-payment, .split-payment { padding: 13px; }
   .duitnow-payment img { width: min(100%, 270px); }

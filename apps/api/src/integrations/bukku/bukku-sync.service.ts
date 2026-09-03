@@ -3,6 +3,7 @@ import { Product, ProductUOM } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { BukkuAdapter } from './bukku.adapter';
 import { BukkuProductCatalogue, BukkuProductPriceType } from './bukku.types';
+import { generatedAliasesForProduct, normalizeProductText, structuredSearchFieldsForProduct } from '../../products/product-search';
 
 type DetailUnit = { id?: number | string; unit_id?: number | string; unit_price?: number | string };
 type ProductDetail = { id?: number | string; product_id?: number | string; base_unit_id?: number | string; units?: DetailUnit[] };
@@ -82,8 +83,11 @@ export class BukkuSyncService {
     const sku = product?.sku ?? await this.availableProductSku(companyId, requestedSku, item.externalId);
     const catalogHash = this.catalogHash(item);
     const active = !item.archived && item.isSelling !== false;
-    const data = { sku, name: item.name?.trim() || product?.name || `Bukku product ${item.externalId}`, category: item.type ?? product?.category, classificationCode: item.classificationCode, bukkuType: item.type, bukkuCatalogHash: catalogHash, trackStock: item.trackInventory ?? product?.trackStock ?? true, active };
+    const name = item.name?.trim() || product?.name || `Bukku product ${item.externalId}`;
+    const category = item.type ?? product?.category;
+    const data = { sku, name, category, classificationCode: item.classificationCode, bukkuType: item.type, bukkuCatalogHash: catalogHash, trackStock: item.trackInventory ?? product?.trackStock ?? true, active, ...structuredSearchFieldsForProduct([name, product?.supplierDescription, category]) };
     const saved = product ? await this.db.product.update({ where: { id: product.id }, data }) : await this.db.product.create({ data: { companyId, ...data } });
+    await this.refreshGeneratedAliases(saved.id, [saved.name, saved.supplierDescription, saved.category]);
     await this.db.externalReference.upsert({ where: { companyId_provider_entityType_localId: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: saved.id } }, update: { externalId: item.externalId, syncedAt: new Date() }, create: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: saved.id, externalId: item.externalId } });
     const units = await this.upsertUnits(companyId, saved.id, item.units);
     const barcodeConflicts = await this.upsertBarcodes(saved.id, item.barcode, units);
@@ -118,6 +122,20 @@ export class BukkuSyncService {
     return conflicts;
   }
 
+  private async refreshGeneratedAliases(productId: string, values: Array<string | null | undefined>) {
+    const aliases = generatedAliasesForProduct(values);
+    await this.db.$transaction(async (tx) => {
+      await tx.productAlias.deleteMany({ where: { productId, source: 'GENERATED' } });
+      if (aliases.length) await tx.productAlias.createMany({
+        data: aliases.map((text) => {
+          const normalized = normalizeProductText(text);
+          return { productId, text, normalizedToken: normalized.token, normalizedCompact: normalized.compact, source: 'GENERATED' as const };
+        }),
+        skipDuplicates: true,
+      });
+    });
+  }
+
   private async importPrices(priceLevelId: string, ids: string[], type: BukkuProductPriceType, imported: Map<string, ImportedProduct>) {
     let requests = 0; let failures = 0;
     for (const idsInBatch of this.chunks(ids, 50)) {
@@ -138,10 +156,9 @@ export class BukkuSyncService {
           const amount = Number(unit.unit_price);
           if (!uom || !Number.isFinite(amount) || amount < 0) continue;
           if (type === 'SALE') await this.db.productPrice.upsert({ where: { productId_priceLevelId_uomId: { productId: importedProduct.product.id, priceLevelId, uomId: uom.id } }, update: { amount }, create: { productId: importedProduct.product.id, priceLevelId, uomId: uom.id, amount } });
-          else {
-            await this.db.productPurchasePrice.upsert({ where: { productId_uomId: { productId: importedProduct.product.id, uomId: uom.id } }, update: { amount }, create: { productId: importedProduct.product.id, uomId: uom.id, amount } });
-            if (uom.isBase) await this.db.product.update({ where: { id: importedProduct.product.id }, data: { basePurchaseCost: amount } });
-          }
+          // Bukku purchase prices are accounting-source data, not an inventory receipt.
+          // RetailOS stock and FIFO batches change only through an approved
+          // PurchaseReceipt, so catalogue sync deliberately does not persist COST here.
         }
       }
       await this.pause(125);

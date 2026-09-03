@@ -8,11 +8,18 @@ export class DiscountInputDto {
   @IsOptional() @IsString() approvedById?: string;
 }
 
+export class FifoOverrideDto {
+  @IsString() batchId!: string;
+  @IsString() reason!: string;
+  @IsString() approvedById!: string;
+}
+
 export class CheckoutItemDto {
   @IsString() productId!: string;
   @IsString() uomId!: string;
   @IsNumber({ maxDecimalPlaces: 4 }) @IsPositive() quantity!: number;
   @IsOptional() @ValidateNested() @Type(() => DiscountInputDto) discount?: DiscountInputDto;
+  @IsOptional() @ValidateNested() @Type(() => FifoOverrideDto) fifoOverride?: FifoOverrideDto;
 }
 
 export class PaymentInputDto {
@@ -49,7 +56,8 @@ export class CheckoutDto {
   @IsOptional() @IsString() customerId?: string;
   @IsOptional() @IsString() exchangeReturnId?: string;
   @IsOptional() @ValidateNested() @Type(() => ExchangeRefundInputDto) exchangeRefund?: ExchangeRefundInputDto;
-  @IsOptional() @IsString() shiftId?: string;
+  /** A sale is always attached to the cashier's currently open register shift. */
+  @IsString() shiftId!: string;
   @IsOptional() @IsString() offlineId?: string;
   @IsOptional() @IsString() deviceId?: string;
   @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => CheckoutItemDto)

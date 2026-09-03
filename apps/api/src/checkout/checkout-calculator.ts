@@ -2,17 +2,21 @@ import { BadRequestException } from '@nestjs/common';
 
 export type DiscountInput = { type: 'PERCENTAGE' | 'FIXED'; value: number };
 export type PricedItem = { quantity: number; unitPrice: number; discount?: DiscountInput };
+export type SettledPayment = { method: string; amount: number; tenderedAmount?: number; changeAmount?: number };
 
 const cents = (value: number) => Math.round((value + Number.EPSILON) * 100);
 const money = (valueInCents: number) => valueInCents / 100;
 
 export function discountCents(grossCents: number, discount?: DiscountInput): number {
   if (!discount) return 0;
-  if (discount.value < 0) throw new BadRequestException('Discount cannot be negative');
-  const amount = discount.type === 'PERCENTAGE'
-    ? Math.round(grossCents * Math.min(discount.value, 100) / 100)
-    : cents(discount.value);
-  return Math.min(grossCents, amount);
+  if (!Number.isFinite(discount.value) || discount.value < 0) throw new BadRequestException('Discount must be a non-negative number');
+  if (discount.type === 'PERCENTAGE') {
+    if (discount.value > 100) throw new BadRequestException('Percentage discount cannot exceed 100%');
+    return Math.round(grossCents * discount.value / 100);
+  }
+  const amount = cents(discount.value);
+  if (amount > grossCents) throw new BadRequestException('Fixed discount cannot exceed the line total');
+  return amount;
 }
 
 export function calculateCheckout(items: PricedItem[], saleDiscount?: DiscountInput) {
@@ -55,4 +59,12 @@ export function settlePayments<T extends { method: string; amount: number; refer
     tenderedAmount: money(payment.tenderedCents),
     changeAmount: index === lastCashIndex ? money(changeCents) : 0,
   }));
+}
+
+/**
+ * `Payment.amount` is the settled allocation against the sale. Cash tender and
+ * change are kept in their own fields, so change must never be subtracted here.
+ */
+export function receiptHistoryPaymentAmount(payment: SettledPayment): number {
+  return payment.amount;
 }
