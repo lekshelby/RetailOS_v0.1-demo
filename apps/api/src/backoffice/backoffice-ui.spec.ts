@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 
 const publicFile = (name: string) => readFileSync(join(process.cwd(), 'public', name), 'utf8');
 
@@ -48,5 +49,26 @@ describe('Back Office shell', () => {
     expect(app).toContain("timeZone: 'Asia/Kuala_Lumpur'");
     expect(app).toContain("$('#backoffice-from').value = today");
     expect(app).toContain("$('#backoffice-to').value = today");
+  });
+
+  it('opens Product Management from Back Office without an undefined close handler', async () => {
+    const closeFunction = app.match(/function closeBackoffice\(\) \{[^}]+\}/)?.[0];
+    const binding = app.match(/\$\('#backoffice-product-management'\)\.addEventListener\('click', \(\) => \{ closeBackoffice\(\); openManagement\('products'\)\.catch\(showAlert\); \}\);/)?.[0];
+    expect(closeFunction).toBeTruthy();
+    expect(binding).toBeTruthy();
+    const listeners = new Map<string, () => void>();
+    const hidden = jest.fn();
+    const openManagement = jest.fn().mockResolvedValue(undefined);
+    const showAlert = jest.fn();
+    const select = (selector: string) => selector === '#backoffice-product-management'
+      ? { addEventListener: (event: string, listener: () => void) => listeners.set(event, listener) }
+      : { classList: { add: hidden } };
+    const state = { backoffice: { abort: null } };
+    runInNewContext(`${closeFunction}\n${binding}`, { $: select, openManagement, showAlert, state });
+    expect(() => listeners.get('click')?.()).not.toThrow();
+    await Promise.resolve();
+    expect(hidden).toHaveBeenCalledWith('hidden');
+    expect(openManagement).toHaveBeenCalledWith('products');
+    expect(showAlert).not.toHaveBeenCalled();
   });
 });

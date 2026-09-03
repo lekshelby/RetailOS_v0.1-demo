@@ -43,6 +43,28 @@ describe('ProductsService structured hardware lookup', () => {
     expect(result.items.map((item) => item.id)).toEqual(['half']);
   });
 
+  it.each([
+    ['1/2"', '1/2" NIPPLE', ['1 1/2" NIPPLE', '2 1/2" NIPPLE', '#12 NIPPLE', '12" NIPPLE']],
+    ['2"', '2" PIPE', ['1/2" PIPE', '1 1/2" PIPE', '2 1/2" PIPE']],
+    ['3/4"', '3/4" PIPE', ['3" PIPE', '4" PIPE']],
+    ['3"', '3" PIPE', ['3/4" PIPE']],
+    ['4"', '4" PIPE', ['3/4" PIPE']],
+  ])('keeps %s atomic and excludes forbidden cross-size products', async (query, validName, forbiddenNames) => {
+    const db = { product: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([
+      row('valid', validName), ...forbiddenNames.map((name, index) => row(`forbidden-${index}`, name)),
+    ]) } } as unknown as PrismaService;
+    const result = await new ProductsService(db).lookup('company-1', query, undefined, undefined, true) as { items: Array<{ id: string }> };
+    expect(result.items.map((item) => item.id)).toEqual(['valid']);
+  });
+
+  it('keeps a reducer only when half inch is an explicit standalone reducer dimension', async () => {
+    const db = { product: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([
+      row('valid-reducer', '1/2" X 3/8" REDUCER'), row('larger-only', '1 1/2" X 1" REDUCER'),
+    ]) } } as unknown as PrismaService;
+    const result = await new ProductsService(db).lookup('company-1', '1/2"', undefined, undefined, true) as { items: Array<{ id: string }> };
+    expect(result.items.map((item) => item.id)).toEqual(['valid-reducer']);
+  });
+
   it('returns only the full intersection for bare-inch 10 ms b', async () => {
     const db = { product: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([
       row('match', '10" M/S BEND'), row('wrong-material', '10" S/STEEL BEND'), row('wrong-type', '10" M/S NIPPLE'),

@@ -196,15 +196,19 @@ function structuredProductSearch(query) {
   return { dimension, dimensionLabel: dimension ? `${dimension.slice(0, -1)}″` : null, material: materialMatch?.[0] || null, materialLabel: state.language === 'zh' ? materialMatch?.[2] : materialMatch?.[1], productType: typeMatch?.[0] || null, productTypeLabel: state.language === 'zh' ? typeMatch?.[2] : typeMatch?.[1], familyTerms, structured: !unsafeShorthandOnly && (Boolean(dimensionMatch) || recognized >= 2), unsafeShorthandOnly };
 }
 function cachedStructuredScore(product, query) {
-  const dimensions = product.searchDimensions || [];
+  const dimensions = explicitCachedProductDimensions(product);
   const materials = product.searchMaterials || [];
   const productTypes = product.searchProductTypes || [];
   return Number(Boolean(query.dimension && dimensions.includes(query.dimension))) + Number(Boolean(query.material && materials.includes(query.material))) + Number(Boolean(query.productType && productTypes.includes(query.productType)));
 }
 function cachedStructuredSpecificity(product, query) {
-  return (query.dimension ? Math.max(0, (product.searchDimensions || []).length - 1) : 0) * 100
+  return (query.dimension ? Math.max(0, explicitCachedProductDimensions(product).length - 1) : 0) * 100
     + (query.material ? Math.max(0, (product.searchMaterials || []).length - 1) : 0) * 10
     + (query.productType ? Math.max(0, (product.searchProductTypes || []).length - 1) : 0);
+}
+function explicitCachedProductDimensions(product) {
+  const searchable = [product.name, product.supplierDescription, product.category, ...(product.aliases || []).filter((alias) => alias.source !== 'GENERATED').map((alias) => alias.text)].filter(Boolean).join(' ');
+  return [...new Set(hardwareDimensionMatches(searchable).map((match) => match.dimension))];
 }
 function cachedStructuredFamilyMatch(product, query) { const searchable = normalizeProductSearch([product.name, product.supplierDescription, product.category, ...(product.aliases || []).map((alias) => alias.text)].filter(Boolean).join(' ')); return !query.familyTerms?.length || query.familyTerms.every((term) => searchable.tokens.some((token) => token.startsWith(term))); }
 function expandedProductSearch(query) {
@@ -1154,6 +1158,7 @@ async function loadBackoffice() {
   finally { $('#backoffice-loading').classList.add('hidden'); }
 }
 async function openBackoffice() { if (!managementDesktopAvailable()) throw new Error('Back Office is available on a PC only'); if (!state.user.permissions.some((permission) => ['backoffice.view', 'company.manage', 'shift.report.view'].includes(permission))) throw new Error('Manager access is required for Back Office reports'); $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#backoffice-panel').classList.remove('hidden'); await loadBackoffice(); }
+function closeBackoffice() { state.backoffice.abort?.abort(); $('#backoffice-panel').classList.add('hidden'); }
 function exportBackofficeCsv() { const rows = state.backoffice.rows; if (!rows.length) throw new Error('There are no report rows to export'); const keys = Object.keys(rows[0]); const csv = [keys, ...rows.map((row) => keys.map((key) => row[key]))].map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"','""')}"`).join(',')).join('\r\n'); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })); link.download = `retailos-${state.backoffice.section}-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(link.href); }
 
 async function downloadAuthenticated(path, fileName) {
@@ -1203,7 +1208,7 @@ window.addEventListener('resize', refreshManagementAvailability);
 $('#language-select').addEventListener('change', () => { state.language = $('#language-select').value; localStorage.setItem('retailos-language', state.language); applyLanguage(); renderCart(); renderRecentItems(); });
 $('#nav-dashboard').addEventListener('click', () => { closeItemSearch(); $('#backoffice-panel').classList.add('hidden'); $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); window.scrollTo({ top: 0, behavior: 'smooth' }); $('#lookup-query').focus(); });
 $('#nav-backoffice').addEventListener('click', () => openBackoffice().catch(showAlert));
-$('#close-backoffice').addEventListener('click', () => $('#backoffice-panel').classList.add('hidden'));
+$('#close-backoffice').addEventListener('click', closeBackoffice);
 $('#refresh-backoffice').addEventListener('click', () => loadBackoffice().catch(showAlert));
 document.querySelectorAll('[data-backoffice-section]').forEach((button) => button.addEventListener('click', () => showBackofficeSection(button.dataset.backofficeSection).catch(showAlert)));
 document.querySelectorAll('[data-range]').forEach((button) => button.addEventListener('click', () => { state.backoffice.range = button.dataset.range; document.querySelectorAll('[data-range]').forEach((item) => item.classList.toggle('active', item === button)); $('#backoffice-custom-range').classList.toggle('hidden', state.backoffice.range !== 'CUSTOM'); if (state.backoffice.range === 'CUSTOM') { const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }); if (!$('#backoffice-from').value) $('#backoffice-from').value = today; if (!$('#backoffice-to').value) $('#backoffice-to').value = today; } else loadBackoffice().catch(showAlert); }));
