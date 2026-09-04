@@ -317,18 +317,26 @@ async function loadCurrentShift() {
     state.verifiedShift = { ...state.shift };
     const openedAt = new Date(state.shift.openedAt).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' });
     $('#shift-status').textContent = `Shift: open since ${openedAt}`;
-    $('#shift-action').textContent = 'Close shift'; $('#cash-movement').disabled = false;
+    const mayCloseShift = state.user.permissions.includes('shift.close');
+    $('#shift-action').textContent = mayCloseShift ? 'Close shift' : 'Shift open';
+    $('#shift-action').disabled = !mayCloseShift;
+    $('#cash-movement').disabled = false;
     saveOfflineSession();
   } catch (_) {
     if (!navigator.onLine && canCheckout()) {
       const openedAt = new Date(state.shift.openedAt).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' });
       $('#shift-status').textContent = `Shift: offline · opened since ${openedAt}`;
-      $('#shift-action').textContent = 'Close shift'; $('#cash-movement').disabled = true;
+      const mayCloseShift = state.user.permissions.includes('shift.close');
+      $('#shift-action').textContent = mayCloseShift ? 'Close shift' : 'Shift open';
+      $('#shift-action').disabled = !mayCloseShift;
+      $('#cash-movement').disabled = true;
       return;
     }
     state.shift = null; state.verifiedShift = null;
     $('#shift-status').textContent = 'Shift: not open';
-    $('#shift-action').textContent = 'Open shift'; $('#cash-movement').disabled = true;
+    $('#shift-action').textContent = 'Open shift';
+    $('#shift-action').disabled = !state.user.permissions.includes('shift.open');
+    $('#cash-movement').disabled = true;
     saveOfflineSession();
   }
 }
@@ -336,8 +344,10 @@ async function loadCurrentShift() {
 async function operateShift() {
   const location = selectedLocation(); const registerId = $('#register-select').value;
   if (!state.shift) {
+    if (!state.user.permissions.includes('shift.open')) throw new Error('You do not have permission to open a shift');
     $('#shift-opening-float').value = '0.00'; $('#shift-open-dialog').classList.remove('hidden'); $('#shift-opening-float').focus(); return;
   }
+  if (!state.user.permissions.includes('shift.close')) throw new Error('A manager must close this shift');
   $('#shift-closing-float').value = state.user.permissions.includes('shift.report.view') ? Number(state.shift.expectedCash).toFixed(2) : '';
   $('#shift-manager-pin').value = '';
   $('#shift-stock-shortage-acknowledged').checked = false; syncShiftCloseAcknowledgement();
@@ -346,6 +356,7 @@ async function operateShift() {
 
 async function openShiftFromDialog() {
   if (state.shift) throw new Error('A shift is already open');
+  if (!state.user.permissions.includes('shift.open')) throw new Error('You do not have permission to open a shift');
   const openingFloat = Number($('#shift-opening-float').value);
   if (!Number.isFinite(openingFloat) || openingFloat < 0 || openingFloat > 10000) throw new Error('Enter an opening cash float from RM0.00 to RM10,000.00');
   const location = selectedLocation();
@@ -388,12 +399,13 @@ async function showShiftReport(shiftId = state.shift?.id, reportActorId = state.
   if (!shiftId) return showShiftReportHistory();
   if (reportActorId === state.user.id && !state.user.permissions.includes('shift.report.view')) throw new Error('Manager access is required for shift reports');
   const report = await request(`/shifts/${shiftId}/report?companyId=${encodeURIComponent(state.config.company.id)}&actorId=${encodeURIComponent(reportActorId)}`, { sessionToken });
-  const payments = Object.entries(report.paymentTotals).map(([method, amount]) => `<li>${escapeHtml(method)}: ${money(amount)}</li>`).join('') || '<li>No completed payments</li>';
-  const refunds = report.returns.length ? report.returns.map((item) => `<li>${escapeHtml(item.type)}: ${money(item.total)}</li>`).join('') : '<li>No returns processed in this shift</li>';
+  const payments = `<li>CASH: ${money(Number(report.paymentTotals.CASH || 0))}</li><li>BANK TRANSFER: ${money(Number(report.paymentTotals.BANK_TRANSFER || 0))}</li>`;
+  const returnTotal = report.returns.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const refunds = `<li>RETURNS: ${money(returnTotal)}</li>`;
   const stockFollowUp = report.stockShortages?.length ? `<section class="receipt-stock-warning"><h3>Negative stock / stock follow-up</h3><p>${report.stockShortages.length} sale line(s) require manager follow-up. This section is included in the printed report and daily Excel digest.</p><p><strong>${report.stockShortageAcknowledgement ? `Acknowledged by ${escapeHtml(report.stockShortageAcknowledgement.managerId)} at ${new Date(report.stockShortageAcknowledgement.acknowledgedAt).toLocaleString('en-MY')}` : 'Manager acknowledgement is required before this shift can close.'}</strong></p><ul>${report.stockShortages.map((item) => `<li><strong>${escapeHtml(item.productName)}</strong> (${escapeHtml(item.sku)}) — receipt ${escapeHtml(item.receiptNo)}, cashier ${escapeHtml(item.cashier)}, before ${Number(item.preSaleQuantity)}, sold ${Number(item.soldQuantity)}, after ${Number(item.postSaleQuantity)}, shortage introduced ${Number(item.shortageIntroduced)}</li>`).join('')}</ul></section>` : '';
   const digestStatus = report.dailyDigest ? `<section class="receipt-stock-warning"><h3>Daily Excel digest ready</h3><p>${escapeHtml(report.dailyDigest.exportFileName)} was saved on the PC. It includes the order, item, payment, return, and cash-movement detail. Bukku handoff is safely queued for financial mapping review.</p></section>` : report.shift.closedAt ? '<section class="receipt-stock-warning"><h3>Daily Excel digest</h3><p>Download this closed shift’s Excel digest. RetailOS will also save it on the PC.</p></section>' : '';
   $('#printable-receipt').style.setProperty('--receipt-width', '80mm');
-  $('#printable-receipt').innerHTML = `<div class="receipt-head"><h3>Shift report</h3><p>${escapeHtml(report.shift.location)} · ${escapeHtml(report.shift.register)}</p><p>Cashier: ${escapeHtml(report.shift.cashier)}</p><p>Opened: ${new Date(report.shift.openedAt).toLocaleString('en-MY')}</p>${report.shift.closedAt ? `<p>Closed: ${new Date(report.shift.closedAt).toLocaleString('en-MY')}</p>` : ''}</div><div class="receipt-lines"><p>Sales ${report.summary.salesCount} · Gross ${money(report.summary.grossSales)}</p><p>Discounts ${money(report.summary.discountTotal)}</p><p>Cash sales ${money(report.summary.cashSales)} · Cash refunds ${money(report.summary.cashRefunds)}</p><p>Cash in ${money(report.summary.cashIn)} · Cash out ${money(report.summary.cashOut)}</p><p>Opening float ${money(report.summary.openingFloat)}</p></div><div class="receipt-summary"><div><span>Expected cash</span><strong>${money(report.summary.expectedCash)}</strong></div>${report.summary.variance !== undefined ? `<div><span>Variance</span><strong>${money(report.summary.variance)}</strong></div>` : ''}</div>${stockFollowUp}${digestStatus}<div class="receipt-payment"><h3>Payments</h3><ul>${payments}</ul><h3>Returns</h3><ul>${refunds}</ul></div><div class="receipt-actions"><button type="button" class="primary" data-print-shift-report="${escapeHtml(report.shift.id)}">Print shift report</button>${report.shift.closedAt ? `<button type="button" data-download-shift-digest="${escapeHtml(report.shift.id)}">Download daily Excel</button>` : ''}</div>`;
+  $('#printable-receipt').innerHTML = `<div class="receipt-head"><h3>Shift report</h3><p>${escapeHtml(report.shift.location)} · ${escapeHtml(report.shift.register)}</p><p>Cashier: ${escapeHtml(report.shift.cashier)}</p><p>Opened: ${new Date(report.shift.openedAt).toLocaleString('en-MY')}</p>${report.shift.closedAt ? `<p>Closed: ${new Date(report.shift.closedAt).toLocaleString('en-MY')}</p>` : ''}</div><div class="receipt-lines"><p>Sales ${report.summary.salesCount} · Gross ${money(report.summary.grossSales)}</p><p>Discounts ${money(report.summary.discountTotal)}</p><p>Cash sales ${money(report.summary.cashSales)} · Cash refunds ${money(report.summary.cashRefunds)}</p><p>Cash in ${money(report.summary.cashIn)} · Cash out ${money(report.summary.cashOut)}</p><p>Opening float ${money(report.summary.openingFloat)}</p></div><div class="receipt-summary"><div><span>Expected cash</span><strong>${money(report.summary.expectedCash)}</strong></div>${report.summary.variance !== undefined ? `<div><span>Variance</span><strong>${money(report.summary.variance)}</strong></div>` : ''}</div>${stockFollowUp}${digestStatus}<div class="receipt-payment"><h3>Payments</h3><ul>${payments}</ul><h3>Returns</h3><ul>${refunds}</ul></div><div class="receipt-actions">${report.shift.closedAt ? `<button type="button" data-download-shift-digest="${escapeHtml(report.shift.id)}">Download daily Excel</button>` : ''}<button type="button" class="quiet" data-print-shift-report="${escapeHtml(report.shift.id)}">Print shift report</button></div>`;
   $('#receipt-panel').classList.remove('hidden');
 }
 
@@ -425,7 +437,7 @@ async function closeShiftFromDialog() {
   if (!manager.user.permissions.includes('shift.report.view')) throw new Error('A manager PIN is required to close a shift');
   const shiftId = state.shift.id;
   const closeResult = await request(`/shifts/${shiftId}/close`, { method: 'POST', approvalToken: manager.sessionToken, body: JSON.stringify({ companyId: state.config.company.id, cashierId: state.user.id, managerId: manager.user.id, closingFloat, stockShortageAcknowledged: Boolean($('#shift-stock-shortage-acknowledged')?.checked) }) });
-  $('#shift-close-dialog').classList.add('hidden'); await loadCurrentShift(); await showShiftReport(shiftId, manager.user.id, manager.sessionToken); showToast(closeResult.reportPrintError ? `Shift closed, but automatic report print failed: ${closeResult.reportPrintError}` : closeResult.negativeStock?.length ? `Shift closed and report printed. ${closeResult.negativeStock.length} stock shortage${closeResult.negativeStock.length === 1 ? '' : 's'} need review.` : 'Shift closed and report printed.');
+  $('#shift-close-dialog').classList.add('hidden'); await loadCurrentShift(); await showShiftReport(shiftId, manager.user.id, manager.sessionToken); showToast(closeResult.negativeStock?.length ? `Shift closed. ${closeResult.negativeStock.length} stock shortage${closeResult.negativeStock.length === 1 ? '' : 's'} need review. Download or print the report manually.` : 'Shift closed. Download or print the report manually.');
 }
 
 function formatStockQuantity(value) {
@@ -439,7 +451,7 @@ function refreshManagementAvailability() {
   const desktop = managementDesktopAvailable();
   const permissions = state.user.permissions;
   $('#shift-report').classList.toggle('hidden', !permissions.includes('shift.report.view'));
-  $('#sync-now').classList.toggle('hidden', !permissions.some((permission) => ['company.manage', 'backoffice.view'].includes(permission)));
+  $('#sync-now').classList.toggle('hidden', !permissions.includes('sync.run'));
   $('#nav-backoffice').classList.toggle('hidden', !desktop || !permissions.some((permission) => ['backoffice.view', 'company.manage', 'shift.report.view'].includes(permission)));
   $('#nav-products').classList.toggle('hidden', !desktop || !permissions.includes('catalog.manage'));
   $('#nav-contacts').classList.toggle('hidden', !desktop || !permissions.includes('contact.manage'));
@@ -826,6 +838,10 @@ function syncPaymentMethod() {
 }
 
 function openCashPayment(amountDue) {
+  // The mobile cart makes its siblings inert to provide modal isolation. Close
+  // that drawer before opening the sibling cash dialog so the amount field and
+  // Complete button remain focusable and clickable.
+  if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer();
   $('#cash-payment-due').textContent = money(amountDue);
   $('#cash-payment-received').value = amountDue.toFixed(2);
   updateCashChange();
@@ -1388,8 +1404,8 @@ $('#cancel-duitnow').addEventListener('click', () => $('#duitnow-payment').class
 $('#cancel-bank-transfer').addEventListener('click', () => $('#bank-transfer-payment').classList.add('hidden'));
 $('#hide-cash-payment').addEventListener('click', () => $('#cash-payment-dialog').classList.add('hidden'));
 $('#cash-payment-received').addEventListener('input', updateCashChange);
-$('#cash-payment-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await completeCheckout(true, $('#cash-payment-received').value); } catch (error) { $('#checkout-message').textContent = error.message; } });
-$('#pay-cash').addEventListener('click', async () => { try { await completeCheckout(); } catch (error) { $('#checkout-message').textContent = error.message; } });
+$('#cash-payment-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await completeCheckout(true, $('#cash-payment-received').value); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#pay-cash').addEventListener('click', async () => { try { await completeCheckout(); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
 $('#confirm-duitnow').addEventListener('click', async () => { try { await completeCheckout(true); } catch (error) { $('#checkout-message').textContent = error.message; } });
 $('#confirm-bank-transfer').addEventListener('click', async () => { try { await completeCheckout(true); } catch (error) { $('#checkout-message').textContent = error.message; } });
 $('#confirm-split').addEventListener('click', async () => { try { await completeCheckout(true); } catch (error) { $('#checkout-message').textContent = error.message; } });

@@ -20,7 +20,7 @@ export class BukkuAutoSyncService implements OnModuleInit, OnModuleDestroy {
   async syncNow(companyId: string, actorId: string, trigger: 'MANUAL' | 'SHIFT_OPEN' | 'SCHEDULED' = 'MANUAL') {
     const actor = await this.db.user.findFirst({ where: { id: actorId, companyId, status: 'ACTIVE' }, include: { role: true } });
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
-    if (!actor || !permissions.some((permission) => ['company.manage', 'backoffice.view'].includes(String(permission)))) throw new ForbiddenException('Manager access is required for Bukku reconciliation');
+    if (!actor || !permissions.includes('sync.run')) throw new ForbiddenException('Manual sync permission is required');
     return this.run(companyId, trigger, actorId);
   }
 

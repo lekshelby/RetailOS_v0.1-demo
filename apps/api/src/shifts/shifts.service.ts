@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
@@ -13,16 +13,29 @@ import { receiptHistoryPaymentAmount } from '../checkout/checkout-calculator';
 import { writeXlsx, XlsxSheet } from './xlsx-writer';
 
 @Injectable()
-export class ShiftsService {
+export class ShiftsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ShiftsService.name);
+  private autoCloseTimer?: NodeJS.Timeout;
   constructor(private readonly db: PrismaService, private readonly bukkuSync: BukkuAutoSyncService, private readonly bukku: BukkuAdapter, private readonly thermalPrinter: ThermalPrinterService) {}
+
+  onModuleInit() {
+    if (process.env.SHIFT_AUTO_CLOSE_ENABLED === 'false') return;
+    void this.autoCloseExpiredShifts();
+    this.autoCloseTimer = setInterval(() => { void this.autoCloseExpiredShifts(); }, 60_000);
+    this.autoCloseTimer.unref();
+  }
+
+  onModuleDestroy() { if (this.autoCloseTimer) clearInterval(this.autoCloseTimer); }
 
   async open(input: OpenShiftDto) {
     const [location, register, cashier] = await Promise.all([
       this.db.location.findFirst({ where: { id: input.locationId, companyId: input.companyId } }),
       this.db.register.findFirst({ where: { id: input.registerId, locationId: input.locationId } }),
-      this.db.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' } }),
+      this.db.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
     ]);
     if (!location || !register || !cashier) throw new BadRequestException('Invalid store, register, or cashier');
+    const cashierPermissions = Array.isArray(cashier.role.permissions) ? cashier.role.permissions : [];
+    if (!cashierPermissions.includes('shift.open')) throw new ForbiddenException('Shift opening permission is required');
     const anomalyThreshold = 1000;
     if (input.openingFloat > anomalyThreshold) {
       if (!input.anomalyConfirmed) throw new BadRequestException(`Opening floats above RM${anomalyThreshold.toFixed(2)} require an explicit confirmation`);
@@ -73,7 +86,7 @@ export class ShiftsService {
     return {
       shift: { id: shift.id, location: shift.location.name, register: shift.register.name, cashier: shift.cashier.name, openedAt: shift.openedAt, closedAt: shift.closedAt },
       summary: { ...summary, ...reconcileCash({ ...summary, countedCash: shift.closingFloat == null ? undefined : Number(shift.closingFloat) }), salesCount: sales.length, grossSales: sales.reduce((sum, sale) => sum + Number(sale.grandTotal), 0), discountTotal: sales.reduce((sum, sale) => sum + Number(sale.discountTotal), 0) },
-      paymentTotals,
+      paymentTotals: this.shiftClosePaymentTotals(paymentTotals),
       cashMovements: shift.movements.map((movement) => ({ type: movement.type, amount: Number(movement.amount), reason: movement.reason, createdAt: movement.createdAt })),
       returns: returns.map((record) => ({ type: record.type, total: Number(record.total), createdAt: record.createdAt, payments: record.payments.map((payment) => ({ method: payment.method, amount: Number(payment.amount) })) })),
       receipts: sales.map((sale) => ({ receiptNo: sale.receiptNo, total: Number(sale.grandTotal), completedAt: sale.completedAt })),
@@ -108,8 +121,9 @@ export class ShiftsService {
       `Expected cash: RM${report.summary.expectedCash.toFixed(2)}`,
       ...(report.summary.variance === undefined ? [] : [`Variance: RM${report.summary.variance.toFixed(2)}`]),
       '--------------------------------',
-      ...Object.entries(report.paymentTotals).map(([method, amount]) => `${method}: RM${amount.toFixed(2)}`),
-      `Returns: ${report.returns.length}`,
+      `CASH: RM${report.paymentTotals.CASH.toFixed(2)}`,
+      `BANK TRANSFER: RM${report.paymentTotals.BANK_TRANSFER.toFixed(2)}`,
+      `RETURNS: RM${report.returns.reduce((sum, record) => sum + record.total, 0).toFixed(2)}`,
       report.stockShortages.length ? `Negative stock / follow-up: ${report.stockShortages.length} sale line(s)` : 'Negative stock / follow-up: none',
       ...report.stockShortages.flatMap((item) => [`${item.sku} ${item.productName}`, `Receipt ${item.receiptNo}: before ${item.preSaleQuantity}, sold ${item.soldQuantity}, after ${item.postSaleQuantity}, introduced ${item.shortageIntroduced}`]),
       report.stockShortageAcknowledgement ? `Stock shortages acknowledged by ${report.stockShortageAcknowledgement.managerId} at ${report.stockShortageAcknowledgement.acknowledgedAt}` : report.stockShortages.length ? 'Stock shortage acknowledgement: REQUIRED' : 'Stock shortage acknowledgement: not applicable',
@@ -147,8 +161,13 @@ export class ShiftsService {
   }
 
   async close(shiftId: string, input: CloseShiftDto) {
-    const shift = await this.requireActiveShift(shiftId, input.companyId, input.cashierId);
-    const manager = await this.db.user.findFirst({ where: { id: input.managerId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } });
+    const [shift, closingActor, manager] = await Promise.all([
+      this.requireActiveShift(shiftId, input.companyId, input.cashierId),
+      this.db.user.findFirst({ where: { id: input.cashierId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
+      this.db.user.findFirst({ where: { id: input.managerId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } }),
+    ]);
+    const closingPermissions = Array.isArray(closingActor?.role.permissions) ? closingActor.role.permissions : [];
+    if (!closingActor || !closingPermissions.includes('shift.close')) throw new ForbiddenException('Only a manager may close a shift');
     const permissions = Array.isArray(manager?.role.permissions) ? manager.role.permissions : [];
     if (!manager || !permissions.includes('shift.report.view')) throw new ForbiddenException('Manager approval is required to close a shift');
     const summary = await this.summary(shift.id);
@@ -157,29 +176,74 @@ export class ShiftsService {
     if (stockShortages.length && !input.stockShortageAcknowledged) throw new UnprocessableEntityException('A manager acknowledgement is required before closing a shift with stock shortages');
     const closedAt = new Date();
     await this.db.shift.update({ where: { id: shift.id }, data: { closingFloat: input.closingFloat, closedAt } });
-    await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: input.cashierId, action: 'SHIFT_CLOSED', entityType: 'Shift', entityId: shift.id, after: { ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, stockShortages }, metadata: { approvedById: manager.id, stockShortageAcknowledged: Boolean(input.stockShortageAcknowledged), stockShortageAcknowledgedAt: stockShortages.length ? new Date().toISOString() : null } } });
-    let dailyDigest: { fileName: string; bukkuStatus: string } | undefined;
+    await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: closingActor.id, action: 'SHIFT_CLOSED', entityType: 'Shift', entityId: shift.id, after: { ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, stockShortages }, metadata: { approvedById: manager.id, stockShortageAcknowledged: Boolean(input.stockShortageAcknowledged), stockShortageAcknowledgedAt: stockShortages.length ? new Date().toISOString() : null, reportDelivery: 'MANUAL_DOWNLOAD' } } });
+    const dailyDigest = await this.finalizeClosedShiftDigest(shift.id, input.companyId, manager.id);
+    return { shiftId: shift.id, closedAt, ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, stockShortages, dailyDigest, reportDelivery: 'MANUAL_DOWNLOAD' };
+  }
+
+  /**
+   * Close unattended shifts shortly after the company's local midnight. An
+   * automatic close never invents a physical cash count and never prints. A
+   * shortage shift remains open because the manager acknowledgement invariant
+   * must not be bypassed by the scheduler.
+   */
+  async autoCloseExpiredShifts(now = new Date()) {
+    let shifts: Array<{ id: string; cashierId: string; locationId: string; openedAt: Date; location: { company: { id: string; timezone: string } } }>;
     try {
-      const digest = await this.createDailyDigest(shift.id, input.companyId);
+      shifts = await this.db.shift.findMany({ where: { closedAt: null }, select: { id: true, cashierId: true, locationId: true, openedAt: true, location: { select: { company: { select: { id: true, timezone: true } } } } } });
+    } catch (error) {
+      this.logger.error(`Automatic shift close could not load open shifts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return;
+    }
+    for (const shift of shifts) {
+      const companyId = shift.location.company.id;
+      const timezone = shift.location.company.timezone || 'Asia/Kuala_Lumpur';
+      if (this.localDateKey(shift.openedAt, timezone) === this.localDateKey(now, timezone)) continue;
+      try {
+        const shortages = await this.stockShortagesForShift(shift.id, companyId);
+        if (shortages.length) {
+          const alreadyRecorded = await this.db.auditLog.findFirst({ where: { companyId, action: 'SHIFT_AUTO_CLOSE_BLOCKED', entityType: 'Shift', entityId: shift.id } });
+          if (!alreadyRecorded) await this.db.auditLog.create({ data: { companyId, actorId: shift.cashierId, action: 'SHIFT_AUTO_CLOSE_BLOCKED', entityType: 'Shift', entityId: shift.id, after: { shortageCount: shortages.length, reason: 'Manager stock-shortage acknowledgement is required' } } });
+          continue;
+        }
+        const updated = await this.db.shift.updateMany({ where: { id: shift.id, closedAt: null }, data: { closedAt: now } });
+        if (updated.count !== 1) continue;
+        const summary = await this.summary(shift.id);
+        await this.db.auditLog.create({ data: { companyId, actorId: shift.cashierId, action: 'SHIFT_AUTO_CLOSED', entityType: 'Shift', entityId: shift.id, after: { ...summary, closingFloat: null, closedAt: now.toISOString() }, metadata: { automatic: true, scheduledLocalTime: '00:00', reportPrinted: false, reportDelivery: 'MANUAL_DOWNLOAD' } } });
+        await this.finalizeClosedShiftDigest(shift.id, companyId, shift.cashierId);
+      } catch (error) {
+        this.logger.error(`Automatic close failed for shift ${shift.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+  }
+
+  private localDateKey(value: Date, timezone: string) {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(value);
+  }
+
+  private shiftClosePaymentTotals(source: Record<string, number>) {
+    return {
+      CASH: source.CASH ?? 0,
+      BANK_TRANSFER: ['BANK_TRANSFER', 'DUITNOW', 'CARD', 'OTHER'].reduce((sum, method) => sum + (source[method] ?? 0), 0),
+    };
+  }
+
+  private async finalizeClosedShiftDigest(shiftId: string, companyId: string, actorId: string) {
+    try {
+      const digest = await this.createDailyDigest(shiftId, companyId);
       const job = await this.db.syncJob.upsert({
-        where: { idempotencyKey: `bukku:shift-daily-digest:${shift.id}` },
-        create: { companyId: input.companyId, provider: 'BUKKU', entityType: 'SHIFT_DAILY_DIGEST', entityId: shift.id, action: 'DAILY_CASH_INVOICE_POST', direction: 'OUTBOUND', idempotencyKey: `bukku:shift-daily-digest:${shift.id}`, payload: { status: 'AWAITING_FINANCIAL_MAPPING', exportFileName: digest.fileName, businessDate: digest.businessDate, salesCount: digest.salesCount, itemCount: digest.itemCount, salesTotal: digest.salesTotal, paymentTotals: digest.paymentTotals } },
+        where: { idempotencyKey: `bukku:shift-daily-digest:${shiftId}` },
+        create: { companyId, provider: 'BUKKU', entityType: 'SHIFT_DAILY_DIGEST', entityId: shiftId, action: 'DAILY_CASH_INVOICE_POST', direction: 'OUTBOUND', idempotencyKey: `bukku:shift-daily-digest:${shiftId}`, payload: { status: 'AWAITING_FINANCIAL_MAPPING', exportFileName: digest.fileName, businessDate: digest.businessDate, salesCount: digest.salesCount, itemCount: digest.itemCount, salesTotal: digest.salesTotal, paymentTotals: digest.paymentTotals } },
         update: { payload: { status: 'AWAITING_FINANCIAL_MAPPING', exportFileName: digest.fileName, businessDate: digest.businessDate, salesCount: digest.salesCount, itemCount: digest.itemCount, salesTotal: digest.salesTotal, paymentTotals: digest.paymentTotals }, status: 'PENDING', lastError: null },
       });
-      const posting = await this.postDailyBukkuInvoice(job.id, shift.id, input.companyId, digest.businessDate);
-      dailyDigest = { fileName: digest.fileName, bukkuStatus: posting.status };
-      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: manager.id, action: 'SHIFT_DAILY_DIGEST_EXPORTED', entityType: 'Shift', entityId: shift.id, after: { ...dailyDigest, salesCount: digest.salesCount, itemCount: digest.itemCount, salesTotal: digest.salesTotal } } });
+      const posting = await this.postDailyBukkuInvoice(job.id, shiftId, companyId, digest.businessDate);
+      const result = { fileName: digest.fileName, bukkuStatus: posting.status };
+      await this.db.auditLog.create({ data: { companyId, actorId, action: 'SHIFT_DAILY_DIGEST_EXPORTED', entityType: 'Shift', entityId: shiftId, after: { ...result, salesCount: digest.salesCount, itemCount: digest.itemCount, salesTotal: digest.salesTotal } } });
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown Excel export error';
-      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: manager.id, action: 'SHIFT_DAILY_DIGEST_EXPORT_FAILED', entityType: 'Shift', entityId: shift.id, after: { message } } });
-    }
-    try {
-      const print = await this.printReport(shift.id, input.companyId, manager.id);
-      return { shiftId: shift.id, closedAt, ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, stockShortages, dailyDigest, reportPrint: print };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown printer error';
-      await this.db.auditLog.create({ data: { companyId: input.companyId, actorId: manager.id, action: 'SHIFT_REPORT_AUTO_PRINT_FAILED', entityType: 'Shift', entityId: shift.id, after: { message } } });
-      return { shiftId: shift.id, closedAt, ...summary, closingFloat: input.closingFloat, ...reconciliation, negativeStock, stockShortages, dailyDigest, reportPrintError: message };
+      await this.db.auditLog.create({ data: { companyId, actorId, action: 'SHIFT_DAILY_DIGEST_EXPORT_FAILED', entityType: 'Shift', entityId: shiftId, after: { message } } });
+      return undefined;
     }
   }
 

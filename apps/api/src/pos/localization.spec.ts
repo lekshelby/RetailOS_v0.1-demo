@@ -25,6 +25,20 @@ describe('Chinese POS localization coverage', () => {
     expect(app).not.toContain("line.quantity = Math.max(0.0001, Number(input.value) || 0.0001); renderCart();");
   });
 
+  it('releases the mobile cart inert boundary before opening the cash dialog', () => {
+    expect(app).toContain("if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer();");
+    expect(app.indexOf("if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer();")).toBeLessThan(app.indexOf("$('#cash-payment-dialog').classList.remove('hidden')"));
+    expect(app).toContain("$('#cash-payment-form').addEventListener('submit'");
+    expect(app).toContain("showAlert(error);");
+  });
+
+  it('shows manual sync to sync.run users and separates shift-open from shift-close capability', () => {
+    expect(app).toContain("!permissions.includes('sync.run')");
+    expect(app).toContain("state.user.permissions.includes('shift.open')");
+    expect(app).toContain("state.user.permissions.includes('shift.close')");
+    expect(app).toContain("A manager must close this shift");
+  });
+
   it('keeps alias-aware search available in offline and Chinese modes without changing master data', () => {
     expect(app).toContain('function rankCachedProduct(product, query)');
     expect(app).toContain("matchedAlias: '匹配：{alias} → {name}'");

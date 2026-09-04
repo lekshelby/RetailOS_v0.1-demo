@@ -40,4 +40,15 @@ describe('BukkuAutoSyncService scheduled sync resilience', () => {
 
     await expect((service as unknown as { syncOpenShifts(): Promise<void> }).syncOpenShifts()).resolves.toBeUndefined();
   });
+
+  it('allows an operational cashier with sync.run to start a manual sync', async () => {
+    const db = {
+      user: { findFirst: jest.fn().mockResolvedValue({ id: 'cashier-1', role: { permissions: ['checkout', 'sync.run'] } }) },
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const client = { isConfigured: jest.fn().mockReturnValue(false) };
+    const service = new BukkuAutoSyncService(db as never, client as never, {} as never);
+
+    await expect(service.syncNow('company-1', 'cashier-1')).resolves.toEqual({ skipped: true, reason: 'Bukku is not configured' });
+  });
 });

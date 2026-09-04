@@ -139,7 +139,6 @@ async function main() {
       `/sales/printer/health?companyId=${companyId}&actorId=${cashier.id}`,
     ];
     for (const path of cashierForbidden) await api(path, {}, 403);
-    await api('/sync/now', { method: 'POST', body: JSON.stringify({ companyId, actorId: cashier.id }) }, 403);
     await api(`/products/${productA.id}/stock-adjustment`, { method: 'POST', body: JSON.stringify({ companyId, locationId: location.id, actorId: cashier.id, countedQuantity: 20, reason: 'must be denied' }) }, 403);
     const csvTemplate = await api(`/backoffice/batches/template?companyId=${companyId}&actorId=${manager.id}`, { sessionToken: managerSession });
     const templateBytes = Buffer.from(csvTemplate.body as ArrayBuffer);
