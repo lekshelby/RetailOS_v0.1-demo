@@ -11,8 +11,8 @@ if (-not $principalCheck.IsInRole([System.Security.Principal.WindowsBuiltInRole]
 }
 $runAsUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $runAsUser -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
-$serverSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+$serverSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 
 if (-not (Test-Path -LiteralPath $powershell)) { throw 'Windows PowerShell was not found.' }
 foreach ($file in 'backup-retailos.ps1', 'start-retailos.ps1', 'run-retailos-server.ps1') {
@@ -28,7 +28,7 @@ $startTrigger = New-ScheduledTaskTrigger -AtLogOn
 Register-ScheduledTask -TaskName 'RetailOS-Start-At-Logon' -Action $startAction -Trigger $startTrigger -Principal $principal -Settings $settings -Description "Starts Docker Desktop and RetailOS after $runAsUser signs in, then confirms the RetailOS health endpoint." -Force | Out-Null
 
 $serverAction = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptDir\run-retailos-server.ps1`""
-Register-ScheduledTask -TaskName 'RetailOS-Server' -Action $serverAction -Principal $principal -Settings $serverSettings -Description "Runs the RetailOS API independently so it remains alive after the startup task exits." -Force | Out-Null
+Register-ScheduledTask -TaskName 'RetailOS-Server' -Action $serverAction -Principal $principal -Settings $serverSettings -Description "Supervises the RetailOS API, records process exits, and restarts it after a crash." -Force | Out-Null
 
 Get-ScheduledTask -TaskName 'RetailOS-Daily-Backup', 'RetailOS-Start-At-Logon', 'RetailOS-Server' |
   Select-Object TaskName, State, @{ Name = 'RunAs'; Expression = { $runAsUser } }

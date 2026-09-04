@@ -130,7 +130,11 @@ try {
   & $pnpm build
   if ($LASTEXITCODE -ne 0) { throw 'RetailOS production build failed.' }
 
-  Write-StartupLog 'Starting compiled RetailOS server through its independent scheduled task.'
+  $serverTask = Get-ScheduledTask -TaskName 'RetailOS-Server' -ErrorAction SilentlyContinue
+  if (-not $serverTask) {
+    throw 'RetailOS-Server scheduled task is missing. Run scripts\install-retailos-tasks.ps1 once from Administrator PowerShell.'
+  }
+  Write-StartupLog 'Starting compiled RetailOS server through its persistent supervisor task.'
   Start-ScheduledTask -TaskName 'RetailOS-Server'
 
   $appDeadline = (Get-Date).AddSeconds(60)
