@@ -113,4 +113,17 @@ describe('ProductsService structured hardware lookup', () => {
     expect(findFirst.mock.calls[0][0].where.barcodes).toBeDefined();
     expect(findMany).not.toHaveBeenCalled();
   });
+
+  it('returns only operational sale fields and never exposes cost or supplier data', async () => {
+    const product = {
+      ...row('safe', '1/2" S/STEEL NIPPLE'), trackStock: true, supplierDescription: 'SECRET SUPPLIER DESCRIPTION', supplierName: 'SECRET SUPPLIER', basePurchaseCost: 5.59, lastPurchasedAt: new Date(),
+      barcodes: [{ barcode: '102298' }], aliases: [{ text: 'ss n', normalizedToken: 'ss n', normalizedCompact: 'ssn', source: 'MANUAL' }],
+      uoms: [{ id: 'uom-1', code: 'EA', name: 'Each', conversionFactor: 1 }], prices: [{ uomId: 'uom-1', amount: 10 }], stockSnapshots: [{ quantity: 3 }],
+    };
+    const db = { product: { findFirst: jest.fn().mockResolvedValueOnce(product), findMany: jest.fn() } } as unknown as PrismaService;
+    const result = await new ProductsService(db).lookup('company-1', '102298', undefined, undefined, true) as { items: Array<Record<string, unknown>> };
+    expect(result.items[0]).toMatchObject({ id: 'safe', sku: 'SKU-safe', name: product.name, stock: 3, trackStock: true, barcodes: ['102298'] });
+    for (const field of ['supplierDescription', 'supplierName', 'basePurchaseCost', 'lastPurchasedAt', 'nominalLengthMeters', 'source']) expect(result.items[0]).not.toHaveProperty(field);
+    expect((result.items[0].uoms as Array<Record<string, unknown>>)[0]).not.toHaveProperty('purchaseCost');
+  });
 });

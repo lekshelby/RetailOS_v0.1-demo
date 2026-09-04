@@ -7,13 +7,13 @@ async function main() {
   const company = await db.company.upsert({ where: { code: 'TH-DEMO' }, update: {}, create: { name: 'Taiping Hardware Demo', code: 'TH-DEMO' } });
   const cashierRole = await db.role.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Cashier' } },
-    update: { permissions: ['checkout', 'returns', 'cash_movement'] },
-    create: { companyId: company.id, name: 'Cashier', permissions: ['checkout', 'returns', 'cash_movement'] },
+    update: { permissions: ['checkout', 'returns', 'cash_movement', 'catalog.manage', 'shift.open', 'sync.run'] },
+    create: { companyId: company.id, name: 'Cashier', permissions: ['checkout', 'returns', 'cash_movement', 'catalog.manage', 'shift.open', 'sync.run'] },
   });
   const managerRole = await db.role.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Manager' } },
-    update: { permissions: ['checkout', 'returns', 'cash_movement', 'discount.approve', 'sale.void', 'shift.report.view', 'stock.adjust', 'catalog.manage', 'contact.manage', 'company.manage', 'printer.manage', 'backoffice.view'] },
-    create: { companyId: company.id, name: 'Manager', permissions: ['checkout', 'returns', 'cash_movement', 'discount.approve', 'sale.void', 'shift.report.view', 'stock.adjust', 'catalog.manage', 'contact.manage', 'company.manage', 'printer.manage', 'backoffice.view'] },
+    update: { permissions: ['checkout', 'returns', 'cash_movement', 'discount.approve', 'sale.void', 'shift.open', 'shift.close', 'shift.report.view', 'sync.run', 'stock.adjust', 'catalog.manage', 'contact.manage', 'company.manage', 'printer.manage', 'backoffice.view'] },
+    create: { companyId: company.id, name: 'Manager', permissions: ['checkout', 'returns', 'cash_movement', 'discount.approve', 'sale.void', 'shift.open', 'shift.close', 'shift.report.view', 'sync.run', 'stock.adjust', 'catalog.manage', 'contact.manage', 'company.manage', 'printer.manage', 'backoffice.view'] },
   });
   const cashier = await db.user.upsert({
     where: { companyId_email: { companyId: company.id, email: 'cashier@retailos.local' } },

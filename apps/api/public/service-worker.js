@@ -1,6 +1,6 @@
 // Bump this whenever the offline shell changes so an existing phone does not
 // continue to use an earlier UI bundle after a verified deployment.
-const CACHE = 'retailos-shell-v10';
+const CACHE = 'retailos-shell-v12';
 const SHELL = ['/', '/index.html', '/app.js', '/offline-store.js', '/styles.css', '/catalog.css', '/returns.css', '/receipt.css', '/receipt-document.css', '/mobile.css', '/scanner.css', '/management.css', '/backoffice.css', '/checkout.css', '/duitnow-qr-tpg-hardware.jpeg'];
 
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())));

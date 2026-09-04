@@ -3,8 +3,8 @@ const $ = (selector) => document.querySelector(selector);
 const money = (value) => `RM${Number(value || 0).toFixed(2)}`;
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
 const languageText = {
-  en: { sale: 'New sale', cart: 'Cart', signOut: 'Sign out', settings: 'Settings', dashboard: 'Dashboard', receipts: 'Receipts', contacts: 'Contacts', products: 'Products', cashMove: 'Cash in/out', sync: 'Sync now', report: 'Shift report', add: 'Add', addItem: 'Add item', cashCheckout: 'Cash checkout', findReceipt: 'Find / reprint receipt', cartEmpty: 'No items yet.', subtotal: 'Subtotal', discount: 'Discount', total: 'Total', paymentMethod: 'Payment method', remove: 'Remove', available: 'Available', inventoryBalance: 'Inventory balance', stockNotTracked: 'Stock not tracked', noMatchingCachedItems: 'No matching cached items.', noExactStructured: 'No exact {query} found.', showRelated: 'Show related results?', relatedResults: 'Related results — exact structured match was not found.', unsafeShorthand: 'Add a dimension and material before using this one-letter product shorthand.', quantity: 'Quantity', invalidQuantity: 'Enter a whole quantity of at least 1.', openShiftBeforeCheckout: 'Open a shift before checkout.', stockWarning: 'Stock shortage: {available} in stock, {requested} requested. This sale will result in stock {result}.', stockWarningNegative: 'Current inventory balance is {balance}. Selling {requested} will result in stock {result}.', matchedAlias: 'Matched: {alias} → {name}' },
-  zh: { sale: '新销售', cart: '购物车', signOut: '退出', settings: '设置', dashboard: '主页', receipts: '收据', contacts: '联系人', products: '产品', cashMove: '现金存取', sync: '立即同步', report: '班次报表', add: '添加', addItem: '添加商品', cashCheckout: '现金结账', findReceipt: '查找 / 重印收据', cartEmpty: '尚未添加商品。', subtotal: '小计', discount: '折扣', total: '总额', paymentMethod: '付款方式', remove: '移除', available: '可用库存', inventoryBalance: '库存余额', stockNotTracked: '未追踪库存', noMatchingCachedItems: '没有匹配的缓存商品。', noExactStructured: '找不到完全匹配的{query}。', showRelated: '显示相关结果？', relatedResults: '相关结果 — 找不到完全匹配的结构化商品。', unsafeShorthand: '使用单字母商品简称前，请同时输入尺寸和材料。', quantity: '数量', invalidQuantity: '请输入不小于 1 的整数数量。', openShiftBeforeCheckout: '结账前请先开启班次。', stockWarning: '库存不足：库存 {available}，销售数量 {requested}。此销售后库存将为 {result}。', stockWarningNegative: '当前库存余额为 {balance}。销售 {requested} 后库存将为 {result}。', matchedAlias: '匹配：{alias} → {name}' },
+  en: { sale: 'New sale', cart: 'Cart', signOut: 'Sign out', settings: 'Settings', dashboard: 'Dashboard', receipts: 'Receipts', contacts: 'Contacts', products: 'Products', productCatalogue: 'Product catalogue', cashMove: 'Cash in/out', sync: 'Sync now', report: 'Shift report', add: 'Add', addItem: 'Add item', cashCheckout: 'Cash checkout', findReceipt: 'Find / reprint receipt', cartEmpty: 'No items yet.', subtotal: 'Subtotal', discount: 'Discount', total: 'Total', paymentMethod: 'Payment method', remove: 'Remove', available: 'Available', inventoryBalance: 'Inventory balance', stockNotTracked: 'Stock not tracked', noMatchingCachedItems: 'No matching cached items.', noExactStructured: 'No exact {query} found.', showRelated: 'Show related results?', relatedResults: 'Related results — exact structured match was not found.', offlineCatalogueResults: 'Offline results from the last saved catalogue.', unsafeShorthand: 'Add a dimension and material before using this one-letter product shorthand.', quantity: 'Quantity', invalidQuantity: 'Enter a whole quantity of at least 1.', openShiftBeforeCheckout: 'Open a shift before checkout.', stockWarning: 'Stock shortage: {available} in stock, {requested} requested. This sale will result in stock {result}.', stockWarningNegative: 'Current inventory balance is {balance}. Selling {requested} will result in stock {result}.', matchedAlias: 'Matched: {alias} → {name}' },
+  zh: { sale: '新销售', cart: '购物车', signOut: '退出', settings: '设置', dashboard: '主页', receipts: '收据', contacts: '联系人', products: '产品', productCatalogue: '产品目录', cashMove: '现金存取', sync: '立即同步', report: '班次报表', add: '添加', addItem: '添加商品', cashCheckout: '现金结账', findReceipt: '查找 / 重印收据', cartEmpty: '尚未添加商品。', subtotal: '小计', discount: '折扣', total: '总额', paymentMethod: '付款方式', remove: '移除', available: '可用库存', inventoryBalance: '库存余额', stockNotTracked: '未追踪库存', noMatchingCachedItems: '没有匹配的缓存商品。', noExactStructured: '找不到完全匹配的{query}。', showRelated: '显示相关结果？', relatedResults: '相关结果 — 找不到完全匹配的结构化商品。', offlineCatalogueResults: '来自上次保存目录的离线结果。', unsafeShorthand: '使用单字母商品简称前，请同时输入尺寸和材料。', quantity: '数量', invalidQuantity: '请输入不小于 1 的整数数量。', openShiftBeforeCheckout: '结账前请先开启班次。', stockWarning: '库存不足：库存 {available}，销售数量 {requested}。此销售后库存将为 {result}。', stockWarningNegative: '当前库存余额为 {balance}。销售 {requested} 后库存将为 {result}。', matchedAlias: '匹配：{alias} → {name}' },
 };
 function t(key, variables = {}) { const template = languageText[state.language]?.[key] || languageText.en[key] || key; return template.replace(/\{(\w+)\}/g, (_, name) => String(variables[name] ?? `{${name}}`)); }
 const chineseStaticText = {
@@ -16,7 +16,7 @@ const chineseStaticText = {
   'Scan barcode': '扫描条码', 'Point the camera at the barcode.': '将相机对准条码。', 'Receipt': '收据', 'Return / exchange': '退货 / 换货', 'Choose the returned quantities, then select the outcome.': '选择退货数量，然后选择处理方式。',
   'Company details': '公司资料', 'Printer settings': '打印机设置', 'Bukku daily invoice': 'Bukku 每日发票', 'Staff accounts': '员工账户', 'Save': '保存', 'Test PC printer': '测试电脑打印机', 'Customer e-Invoice QR on receipts': '收据上的电子发票二维码', 'Enable e-Invoice request QR': '启用电子发票申请二维码',
   'Cash payment': '现金付款', 'Cash received': '收到现金', 'Balance to return:': '找零：', 'Complete': '完成', 'Opening cash float': '开班备用金', 'Cash in / out': '现金存入 / 取出', 'Type': '类型', 'Cash in': '现金存入', 'Cash out': '现金取出', 'Amount (RM)': '金额（RM）', 'Reason': '原因', 'Manager PIN': '经理 PIN', 'Save cash movement': '保存现金记录',
-  'Add': '添加', 'Remove': '移除', 'Available': '可用库存', 'Stock not tracked': '未追踪库存', 'No matching cached items.': '没有匹配的缓存商品。', 'Searching products…': '正在搜索商品…', 'Cash checkout': '现金结账', 'Search SKU, item name, or barcode': '搜索 SKU、商品名称或条码', 'Search contact name, phone, or email': '搜索联系人姓名、电话或电邮', 'Type barcode number, SKU, or item name': '输入条码、SKU 或商品名称', 'Clear item search': '清除商品搜索', 'Clear product search': '清除商品搜索', 'Clear contact search': '清除联系人搜索', 'Open cart': '打开购物车', 'Dismiss message': '关闭消息', 'Search aliases / alternative names': '搜索别名 / 替代名称', 'Cashiers can search these names. Product names, SKUs and barcodes remain unchanged.': '收银员可搜索这些名称；商品名称、SKU 和条码保持不变。', 'New alias': '新别名', 'Add alias': '添加别名', 'No manually maintained aliases.': '没有手动维护的别名。'
+  'Add': '添加', 'Remove': '移除', 'Available': '可用库存', 'Stock not tracked': '未追踪库存', 'No matching cached items.': '没有匹配的缓存商品。', 'Searching products…': '正在搜索商品…', 'Product catalogue': '产品目录', 'Search sale items and add them to the cart. Cost, supplier, FIFO, and stock-management details are not available here.': '搜索销售商品并加入购物车。此处不显示成本、供应商、FIFO 或库存管理资料。', 'Search name, SKU, barcode, or alias': '搜索名称、SKU、条码或别名', 'Clear product catalogue search': '清除产品目录搜索', 'Cash checkout': '现金结账', 'Search SKU, item name, or barcode': '搜索 SKU、商品名称或条码', 'Search contact name, phone, or email': '搜索联系人姓名、电话或电邮', 'Type barcode number, SKU, or item name': '输入条码、SKU 或商品名称', 'Clear item search': '清除商品搜索', 'Clear product search': '清除商品搜索', 'Clear contact search': '清除联系人搜索', 'Open cart': '打开购物车', 'Dismiss message': '关闭消息', 'Search aliases / alternative names': '搜索别名 / 替代名称', 'Cashiers can search these names. Product names, SKUs and barcodes remain unchanged.': '收银员可搜索这些名称；商品名称、SKU 和条码保持不变。', 'New alias': '新别名', 'Add alias': '添加别名', 'No manually maintained aliases.': '没有手动维护的别名。'
 };
 const staticTextOriginal = new WeakMap();
 function translateStaticText(root = document) {
@@ -156,7 +156,7 @@ async function refreshOfflineStatus() { try { const sales = await window.RetailO
 function productFromCatalogue(product) {
   const availableUoms = product.uoms.map((uom) => { const price = product.prices.find((value) => value.uomId === uom.id); return price ? { uom, unitPrice: Number(price.amount) } : null; }).filter(Boolean);
   const first = availableUoms[0];
-  return !first ? null : { id: product.id, name: product.name, sku: product.sku, supplierDescription: product.supplierDescription, supplierName: product.supplierName, category: product.category, aliases: product.aliases || [], searchDimensions: product.searchDimensions || [], searchMaterials: product.searchMaterials || [], searchProductTypes: product.searchProductTypes || [], matchedAlias: product.matchedAlias || null, lastPurchasedAt: product.lastPurchasedAt, uom: first.uom, unitPrice: first.unitPrice, availableUoms, availableStock: product.stock == null ? null : Number(product.stock), basePurchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost) };
+  return !first ? null : { id: product.id, name: product.name, sku: product.sku, barcodes: product.barcodes || [], aliases: product.aliases || [], searchDimensions: product.searchDimensions || [], searchMaterials: product.searchMaterials || [], searchProductTypes: product.searchProductTypes || [], matchedAlias: product.matchedAlias || null, uom: first.uom, unitPrice: first.unitPrice, availableUoms, availableStock: product.stock == null ? null : Number(product.stock) };
 }
 const productSearchSynonyms = [['ss', 's.s', 's/steel', 'stainless steel'], ['ms', 'm.s', 'm/s', 'm steel', 'mild steel'], ['reducing', 'r bush', 'r/bush', 'rbush', 'valve socket'], ['p sleeve', 'p/sleeve', 'psleeve', 'pipe sleeve', 'p slip', 'p-slip', 'pslip', 'pipe slip']];
 function normalizeProductSearch(value) {
@@ -243,12 +243,15 @@ function searchCachedCatalogue(query, related = false) {
   const items = state.catalogue.map((product) => { const direct = rankCachedProduct(product, query); const synonym = direct ? null : terms.map((term) => rankCachedProduct(product, term)).find(Boolean); return direct || synonym ? { product: { ...product, matchedAlias: (direct?.matchedAlias || (synonym ? query.trim() : null)) }, rank: (direct || synonym).rank } : null; }).filter(Boolean).sort((a, b) => a.rank - b.rank || a.product.name.localeCompare(b.product.name)).slice(0, 20).map((entry) => productFromCatalogue(entry.product)).filter(Boolean);
   return { items, interpretation: null, exact: true, relatedAvailable: false };
 }
-function renderSearchResults(products, source = '', meta = null) {
-  state.searchResults = products;
+function productSearchResultsHtml(products, source = '', meta = null, indexAttribute = 'data-product-index') {
   const interpretation = meta?.interpretation; const chips = interpretation ? [interpretation.dimensionLabel, interpretation.materialLabel, interpretation.productTypeLabel].filter(Boolean) : [];
   const interpreted = chips.length ? `<div class="search-interpretation" aria-label="${state.language === 'zh' ? '已解析的搜索条件' : 'Interpreted search'}">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : '';
   const empty = interpretation?.unsafeShorthandOnly ? `<p class="message" role="alert">${escapeHtml(t('unsafeShorthand'))}</p>` : interpretation?.structured ? `<div class="structured-empty" role="status"><p>${escapeHtml(t('noExactStructured', { query: chips.join(' ') }))}</p>${meta.relatedAvailable ? `<button type="button" class="quiet" data-related-search>${escapeHtml(t('showRelated'))}</button>` : ''}</div>` : `<p class="muted">${escapeHtml(t('noMatchingCachedItems'))}</p>`;
-  $('#search-results').innerHTML = `${interpreted}${source ? `<p class="muted small">${source}</p>` : ''}${products.length ? products.map((product, index) => `<article class="product"><div><strong>${escapeHtml(product.name)}</strong><p>${escapeHtml(product.sku)} · ${escapeHtml(product.uom.name)} · ${money(product.unitPrice)} · ${product.availableStock == null ? escapeHtml(t('stockNotTracked')) : `${escapeHtml(t('available'))} ${product.availableStock}`}${product.supplierDescription ? ` · ${escapeHtml(product.supplierDescription)}` : ''}</p>${product.matchedAlias ? `<p class="matched-alias">${escapeHtml(t('matchedAlias', { alias: product.matchedAlias, name: product.name }))}</p>` : ''}</div><button data-product-index="${index}">${escapeHtml(t('add'))}</button></article>`).join('') : empty}`;
+  return `${interpreted}${source ? `<p class="muted small">${escapeHtml(source)}</p>` : ''}${products.length ? products.map((product, index) => `<article class="product"><div><strong>${escapeHtml(product.name)}</strong><p>${escapeHtml(product.sku)}${product.barcodes?.[0] ? ` · ${escapeHtml(product.barcodes[0])}` : ''} · ${escapeHtml(product.uom.name)} · ${money(product.unitPrice)} · ${product.availableStock == null ? escapeHtml(t('stockNotTracked')) : `${escapeHtml(t('available'))} ${formatStockQuantity(product.availableStock)}`}</p>${product.matchedAlias ? `<p class="matched-alias">${escapeHtml(t('matchedAlias', { alias: product.matchedAlias, name: product.name }))}</p>` : ''}</div><button ${indexAttribute}="${index}" type="button">${escapeHtml(t('add'))}</button></article>`).join('') : empty}`;
+}
+function renderSearchResults(products, source = '', meta = null) {
+  state.searchResults = products;
+  $('#search-results').innerHTML = productSearchResultsHtml(products, source, meta);
   translateStaticText($('#search-results'));
 }
 async function loadOfflineCatalogue() {
@@ -453,10 +456,14 @@ function refreshManagementAvailability() {
   $('#shift-report').classList.toggle('hidden', !permissions.includes('shift.report.view'));
   $('#sync-now').classList.toggle('hidden', !permissions.includes('sync.run'));
   $('#nav-backoffice').classList.toggle('hidden', !desktop || !permissions.some((permission) => ['backoffice.view', 'company.manage', 'shift.report.view'].includes(permission)));
-  $('#nav-products').classList.toggle('hidden', !desktop || !permissions.includes('catalog.manage'));
+  $('#nav-products').classList.toggle('hidden', !permissions.includes('catalog.manage'));
   $('#nav-contacts').classList.toggle('hidden', !desktop || !permissions.includes('contact.manage'));
   $('#nav-company').classList.toggle('hidden', !desktop || !permissions.some((permission) => ['company.manage', 'printer.manage'].includes(permission)));
-  if (!desktop) { $('#backoffice-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); }
+  if (!desktop) {
+    $('#backoffice-panel').classList.add('hidden');
+    const productManagementOpen = !$('#management-panel').classList.contains('hidden') && !$('#management-products').classList.contains('hidden') && permissions.includes('catalog.manage');
+    if (!productManagementOpen) $('#management-panel').classList.add('hidden');
+  }
 }
 function stockWarningForLine(line, requestedQuantity = line.quantity) {
   if (line.availableStock == null) return '';
@@ -538,18 +545,14 @@ async function search(epoch = state.searchEpoch, related = false) {
     const response = await request(`/products/lookup?companyId=${encodeURIComponent(state.config.company.id)}&query=${encodeURIComponent(query)}&priceLevelId=${encodeURIComponent(priceLevel.id)}&locationId=${encodeURIComponent(location.id)}&structured=true${related ? '&related=true' : ''}`, { signal: controller.signal });
     const products = Array.isArray(response) ? response : response.items;
     if (epoch !== state.searchEpoch || $('#lookup-query').value.trim() !== query) return;
-    const addable = products.map((product) => {
-      const availableUoms = product.uoms.map((uom) => { const price = product.prices.find((value) => value.uomId === uom.id); return price ? { uom, unitPrice: Number(price.amount) } : null; }).filter(Boolean);
-      const first = availableUoms[0]; const stock = product.stockSnapshots[0] ? Number(product.stockSnapshots[0].quantity) : null;
-      return !first ? null : { id: product.id, name: product.name, sku: product.sku, supplierDescription: product.supplierDescription, supplierName: product.supplierName, category: product.category, aliases: product.aliases || [], searchDimensions: product.searchDimensions || [], searchMaterials: product.searchMaterials || [], searchProductTypes: product.searchProductTypes || [], matchedAlias: product.matchedAlias || null, lastPurchasedAt: product.lastPurchasedAt, uom: first.uom, unitPrice: first.unitPrice, availableUoms, availableStock: stock, basePurchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost) };
-    }).filter(Boolean);
+    const addable = products.map(productFromCatalogue).filter(Boolean);
     renderSearchResults(addable, related ? t('relatedResults') : '', Array.isArray(response) ? null : response);
   } catch (error) {
     if (error?.name === 'AbortError') return;
     if (!isNetworkIssue(error) || !state.catalogue.length) throw error;
     if (epoch !== state.searchEpoch || $('#lookup-query').value.trim() !== query) return;
     const cached = searchCachedCatalogue(query, related);
-    renderSearchResults(cached.items, 'Offline results from the last saved catalogue.', cached);
+    renderSearchResults(cached.items, t('offlineCatalogueResults'), cached);
   } finally {
     if (state.searchAbort === controller) state.searchAbort = null;
   }
@@ -919,7 +922,7 @@ async function completeCheckout(paymentConfirmed = false, cashTendered) {
   try { receipt = await request('/sales/checkout', { method: 'POST', approvalToken: Object.values(state.approvalTokens).join(','), body: JSON.stringify(payload) }); }
   catch (error) { if (!isNetworkIssue(error)) throw error; receipt = await queueOfflineSale(payload, snapshot); }
   $('#duitnow-payment').classList.add('hidden'); $('#bank-transfer-payment').classList.add('hidden'); $('#cash-payment-dialog').classList.add('hidden');
-  state.cart = []; state.approvalTokens = {}; state.saleDiscount = null; state.exchangeCredit = null; state.exchangeRefundPreference = null; $('#payment-method').value = 'CASH'; clearSavedCart(); renderCart(); $('#search-results').innerHTML = ''; $('#lookup-query').value = ''; $('#cart-panel').classList.remove('cart-open');
+  state.cart = []; state.approvalTokens = {}; state.saleDiscount = null; state.exchangeCredit = null; state.exchangeRefundPreference = null; $('#payment-method').value = 'CASH'; clearSavedCart(); renderCart(); $('#search-results').innerHTML = ''; $('#lookup-query').value = ''; if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer();
   if (receipt.offline) {
     renderPrintableReceipt(receipt.local, { target: '#receipt-dialog-content' }); $('#receipt-dialog-content').classList.add('offline-receipt'); $('#receipt-dialog').classList.remove('hidden'); showToast(`Offline sale saved as ${receipt.receiptNo}. It will sync automatically.`); return;
   }
@@ -1082,7 +1085,7 @@ async function loadManagedStaff() {
   $('#managed-staff-list').innerHTML = data.users.length ? data.users.map((user) => `<article class="managed-item"><strong>${escapeHtml(user.name)}</strong><p>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · <span class="tag">${user.active ? 'Active' : 'Inactive'}</span></p>${user.active && user.id !== state.user.id ? `<button type="button" class="quiet" data-disable-staff="${escapeHtml(user.id)}">Disable account</button>` : ''}</article>`).join('') : '<p class="muted">No staff accounts found.</p>';
 }
 async function openManagement(tab = 'products') {
-  if (!managementDesktopAvailable()) throw new Error('Management functions are available on a PC only');
+  if (!managementDesktopAvailable() && tab !== 'products') throw new Error('This management function is available on a PC only');
   if (tab !== 'settings' && !['company.manage', 'printer.manage', 'catalog.manage', 'contact.manage'].some((permission) => hasPermission(permission))) throw new Error('You do not have access to this section');
   $('#management-message').textContent = '';
   showManagementTab(tab);
@@ -1230,7 +1233,7 @@ $('#sign-in').addEventListener('click', async () => { try { $('#login-message').
 $('#sign-out').addEventListener('click', () => { clearPersistentSession(); window.location.reload(); });
 window.addEventListener('resize', refreshManagementAvailability);
 $('#language-select').addEventListener('change', () => { state.language = $('#language-select').value; localStorage.setItem('retailos-language', state.language); applyLanguage(); renderCart(); renderRecentItems(); });
-$('#nav-dashboard').addEventListener('click', () => { closeItemSearch(); $('#backoffice-panel').classList.add('hidden'); $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); window.scrollTo({ top: 0, behavior: 'smooth' }); $('#lookup-query').focus(); });
+$('#nav-dashboard').addEventListener('click', () => { closeItemSearch(); $('#backoffice-panel').classList.add('hidden'); $('#receipt-panel').classList.add('hidden'); $('#management-panel').classList.add('hidden'); $('#add-product-float').classList.add('hidden'); if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer(); window.scrollTo({ top: 0, behavior: 'smooth' }); $('#lookup-query').focus(); });
 $('#nav-backoffice').addEventListener('click', () => openBackoffice().catch(showAlert));
 $('#close-backoffice').addEventListener('click', closeBackoffice);
 $('#refresh-backoffice').addEventListener('click', () => loadBackoffice().catch(showAlert));
@@ -1258,13 +1261,24 @@ $('#batch-results-csv').addEventListener('click', () => { const batch = state.ba
 $('#refresh-purchase-receipts').addEventListener('click', () => loadPurchaseReceipts().catch(showAlert));
 $('#purchase-receipt-list').addEventListener('click', (event) => { const button = event.target.closest('[data-post-purchase-receipt]'); if (!button) return; postPurchaseReceipt(button.closest('[data-purchase-receipt-id]')).catch(showAlert); });
 $('#backoffice-product-management').addEventListener('click', () => { closeBackoffice(); openManagement('products').catch(showAlert); });
-$('#nav-receipts').addEventListener('click', async () => { try { closeItemSearch(); $('#management-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); reveal($('#receipt-panel')); await loadReceiptHistory(); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
-$('#nav-products').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('products'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
-$('#nav-contacts').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); $('#cart-panel').classList.remove('cart-open'); await openManagement('contacts'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-receipts').addEventListener('click', async () => { try { closeItemSearch(); $('#management-panel').classList.add('hidden'); $('#add-product-float').classList.add('hidden'); if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer(); reveal($('#receipt-panel')); await loadReceiptHistory(); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-products').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer(); await openManagement('products'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
+$('#nav-contacts').addEventListener('click', async () => { try { closeItemSearch(); $('#receipt-panel').classList.add('hidden'); if ($('#cart-panel').classList.contains('cart-open')) closeCartDrawer(); await openManagement('contacts'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
 $('#nav-company').addEventListener('click', async () => { try { closeItemSearch(); await openManagement('settings'); } catch (error) { $('#checkout-message').textContent = error.message; showAlert(error); } });
 $('#hide-receipt').addEventListener('click', () => $('#receipt-panel').classList.add('hidden'));
 $('#hide-receipt-dialog').addEventListener('click', () => $('#receipt-dialog').classList.add('hidden'));
-function setCartBackgroundInert(inert) { [...$('#pos-view').children].filter((element) => element.id !== 'cart-panel').forEach((element) => { element.inert = inert; }); }
+function setElementTreeInertExcept(container, activeElement, inert) {
+  for (const child of container.children) {
+    if (child === activeElement) { child.inert = false; continue; }
+    if (child.contains(activeElement)) { child.inert = false; setElementTreeInertExcept(child, activeElement, inert); continue; }
+    child.inert = inert;
+  }
+}
+function setCartBackgroundInert(inert) {
+  const cart = $('#cart-panel');
+  setElementTreeInertExcept($('#pos-view'), cart, inert);
+  cart.inert = false;
+}
 function openCartDrawer() { state.cartOpener = document.activeElement; closeItemSearch(); const cart = $('#cart-panel'); cart.classList.add('cart-open'); cart.setAttribute('aria-hidden', 'false'); setCartBackgroundInert(true); $('#hide-cart').focus(); }
 function closeCartDrawer() { const cart = $('#cart-panel'); cart.classList.remove('cart-open'); cart.setAttribute('aria-hidden', 'true'); setCartBackgroundInert(false); if (state.cartOpener instanceof HTMLElement) state.cartOpener.focus(); }
 $('#open-cart').addEventListener('click', openCartDrawer);

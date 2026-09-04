@@ -6,9 +6,42 @@ import { latestInventoryCost, recordInventoryLedger } from '../inventory/invento
 import { adjustFifoInventory, assertFifoStockInvariant } from '../inventory/fifo';
 import { expandedSearchTerms, fuzzyProduct, matchesStructuredProduct, normalizeProductText, parseStructuredHardwareQuery, rankProduct, structuredMatchSpecificity, structuredRelatedScore, structuredVariantPenalty } from './product-search';
 
+type OperationalProductRecord = Prisma.ProductGetPayload<{ include: {
+  uoms: true;
+  barcodes: true;
+  aliases: true;
+  prices: true;
+  stockSnapshots: true;
+} }>;
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly db: PrismaService) {}
+
+  /**
+   * POS catalogue responses are deliberately narrower than management product
+   * responses. Cashiers need sale price and availability, but the browser must
+   * never receive purchase cost, supplier, FIFO, margin, or stock-management
+   * metadata through an operational search endpoint.
+   */
+  private operationalProduct(product: OperationalProductRecord, matchedAlias: string | null = null) {
+    return {
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      aliases: product.aliases.map((alias) => ({ text: alias.text, normalizedToken: alias.normalizedToken, normalizedCompact: alias.normalizedCompact, source: alias.source })),
+      searchDimensions: product.searchDimensions,
+      searchMaterials: product.searchMaterials,
+      searchProductTypes: product.searchProductTypes,
+      barcodes: product.barcodes.map((barcode) => barcode.barcode),
+      trackStock: product.trackStock,
+      uoms: product.uoms.map((uom) => ({ id: uom.id, code: uom.code, name: uom.name, conversionFactor: Number(uom.conversionFactor) })),
+      prices: product.prices.map((price) => ({ uomId: price.uomId, amount: Number(price.amount) })),
+      stock: product.stockSnapshots[0] ? Number(product.stockSnapshots[0].quantity) : null,
+      matchedAlias,
+    };
+  }
+
   async catalog(companyId: string, priceLevelId?: string, locationId?: string, offset = 0, limit = 250) {
     const safeOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 500)) : 250;
@@ -21,9 +54,7 @@ export class ProductsService {
       }),
       this.db.product.count({ where }),
     ]);
-    const references = await this.db.externalReference.findMany({ where: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: { in: products.map((product) => product.id) } }, select: { localId: true } });
-    const bukkuProductIds = new Set(references.map((reference) => reference.localId));
-    return { items: products.map((product) => ({ id: product.id, sku: product.sku, name: product.name, supplierDescription: product.supplierDescription, supplierName: product.supplierName, category: product.category, aliases: product.aliases.map((alias) => ({ text: alias.text, normalizedToken: alias.normalizedToken, normalizedCompact: alias.normalizedCompact })), searchDimensions: product.searchDimensions, searchMaterials: product.searchMaterials, searchProductTypes: product.searchProductTypes, lastPurchasedAt: product.lastPurchasedAt, barcodes: product.barcodes.map((barcode) => barcode.barcode), nominalLengthMeters: product.nominalLengthMeters == null ? null : Number(product.nominalLengthMeters), basePurchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost), trackStock: product.trackStock, source: bukkuProductIds.has(product.id) ? 'BUKKU' : 'LOCAL', uoms: product.uoms.map((uom) => ({ id: uom.id, code: uom.code, name: uom.name, conversionFactor: Number(uom.conversionFactor), purchaseCost: product.basePurchaseCost == null ? null : Number(product.basePurchaseCost) * Number(uom.conversionFactor) })), prices: product.prices.map((price) => ({ uomId: price.uomId, amount: Number(price.amount) })), stock: product.stockSnapshots[0] ? Number(product.stockSnapshots[0].quantity) : null })), total, offset: safeOffset, nextOffset: safeOffset + products.length < total ? safeOffset + products.length : null };
+    return { items: products.map((product) => this.operationalProduct(product)), total, offset: safeOffset, nextOffset: safeOffset + products.length < total ? safeOffset + products.length : null };
   }
   async lookup(companyId: string, query: string, priceLevelId?: string, locationId?: string, includeStructure = false, related = false) {
     const term = query.trim();
@@ -42,7 +73,7 @@ export class ProductsService {
         where: { companyId, active: true, sku: { equals: term, mode: 'insensitive' } }, include,
       });
     if (exactIdentifier) {
-      const items = [{ ...exactIdentifier, matchedAlias: null }];
+      const items = [this.operationalProduct(exactIdentifier)];
       return includeStructure ? { items, interpretation: null, exact: true, relatedAvailable: false } : items;
     }
     const interpretation = parseStructuredHardwareQuery(term);
@@ -63,7 +94,7 @@ export class ProductsService {
       const matched = (related
           ? scored.filter((entry) => entry.score >= minimumRelatedScore).sort((left, right) => right.score - left.score || left.specificity - right.specificity || left.variantPenalty - right.variantPenalty || left.product.name.localeCompare(right.product.name))
           : scored.filter((entry) => matchesStructuredProduct(entry.product, interpretation)).sort((left, right) => Number(right.exactName) - Number(left.exactName) || left.specificity - right.specificity || left.variantPenalty - right.variantPenalty || left.product.name.localeCompare(right.product.name)))
-        .slice(0, 20).map((entry) => ({ ...entry.product, matchedAlias: null }));
+        .slice(0, 20).map((entry) => this.operationalProduct(entry.product));
       if (!includeStructure) return matched;
       if (related) return { items: matched, interpretation, exact: false, relatedAvailable: false };
       if (matched.length) return { items: matched, interpretation, exact: true, relatedAvailable: false };
@@ -103,7 +134,7 @@ export class ProductsService {
     }
     const items = ranked.sort((a, b) => a.rank - b.rank || a.product.name.localeCompare(b.product.name) || a.product.id.localeCompare(b.product.id))
       .slice(0, 20)
-      .map(({ product, matchedAlias }) => ({ ...product, matchedAlias }));
+      .map(({ product, matchedAlias }) => this.operationalProduct(product, matchedAlias));
     return includeStructure ? { items, interpretation: null, exact: true, relatedAvailable: false } : items;
   }
 

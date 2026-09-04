@@ -48,7 +48,7 @@ describe('Chinese POS localization coverage', () => {
     expect(app).toContain("escapeHtml(t('noMatchingCachedItems'))");
     expect(app).toContain("escapeHtml(product.name)");
     expect(app).toContain("escapeHtml(product.sku)");
-    expect(serviceWorker).toContain("const CACHE = 'retailos-shell-v10'");
+    expect(serviceWorker).toContain("const CACHE = 'retailos-shell-v12'");
   });
 
   it('allows language switching while bootstrap configuration is still loading', () => {

@@ -41,10 +41,11 @@ describe('Back Office shell', () => {
     expect(html).toContain('Open RetailOS Back Office on a PC for management reports.');
   });
 
-  it('shows the entry point only for a manager capability and calls protected APIs', () => {
+  it('keeps Back Office desktop-only while allowing capability-controlled product management on phones', () => {
     expect(app).toContain("['backoffice.view', 'company.manage', 'shift.report.view']");
     expect(app).toContain("window.matchMedia('(min-width: 1024px)').matches");
-    expect(app).toContain("$('#nav-products').classList.toggle('hidden', !desktop || !permissions.includes('catalog.manage'))");
+    expect(app).toContain("$('#nav-products').classList.toggle('hidden', !permissions.includes('catalog.manage'))");
+    expect(app).toContain("if (!managementDesktopAvailable() && tab !== 'products')");
     expect(app).toContain('/backoffice/dashboard?');
     expect(app).toContain('/backoffice/reports/adjustments?');
   });

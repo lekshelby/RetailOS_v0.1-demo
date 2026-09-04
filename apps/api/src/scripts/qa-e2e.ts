@@ -74,7 +74,7 @@ async function main() {
   try {
     const company = await db.company.create({ data: { name: 'RetailOS QA Store', code: runCode, legalName: 'RetailOS QA Store', tin: 'QA-TIN', brnNew: 'QA-BRN', receiptPaperWidthMm: 80 } });
     companyId = company.id;
-    const cashierRole = await db.role.create({ data: { companyId, name: 'Cashier', permissions: ['checkout', 'returns', 'cash_movement'] } });
+    const cashierRole = await db.role.create({ data: { companyId, name: 'Cashier', permissions: ['checkout', 'returns', 'cash_movement', 'catalog.manage'] } });
     const managerRole = await db.role.create({ data: { companyId, name: 'Manager', permissions: ['checkout', 'returns', 'cash_movement', 'catalog.manage', 'contact.manage', 'printer.manage', 'discount.approve', 'sale.void', 'shift.report.view', 'stock.adjust', 'company.manage', 'backoffice.view'] } });
     const cashier = await db.user.create({ data: { companyId, roleId: cashierRole.id, name: 'QA Cashier', email: `${runCode.toLowerCase()}-cashier@local`, pinHash: pin('1111') } });
     const manager = await db.user.create({ data: { companyId, roleId: managerRole.id, name: 'QA Manager', email: `${runCode.toLowerCase()}-manager@local`, pinHash: pin('2222') } });
@@ -337,14 +337,16 @@ async function main() {
     expect(acknowledgement?.approvedById === manager.id && acknowledgement.stockShortageAcknowledged === true && Boolean(acknowledgement.stockShortageAcknowledgedAt), 'Manager acknowledgement metadata was not persisted in the audit record');
     checks.push('acknowledged shortage close stores manager audit data and includes shortage details in report and Excel digest');
 
-    await api('/management/products', { method: 'POST', body: JSON.stringify({ companyId, actorId: cashier.id, name: 'Denied product', sku: 'QA-DENIED', classificationCode: '022', uoms: [{ code: 'EA', name: 'Each', conversionFactor: 1, salePrice: 3 }] }) }, 403);
+    const cashierProduct = await api('/management/products', { method: 'POST', body: JSON.stringify({ companyId, actorId: cashier.id, name: 'QA Cashier Product', sku: 'QA-CASHIER-PRODUCT', classificationCode: '022', uoms: [{ code: 'EA', name: 'Each', conversionFactor: 1, salePrice: 3 }] }) });
+    expect((cashierProduct.body as any).source === 'LOCAL', 'Cashier product creation was not permitted');
+    await api(`/management/products/${(cashierProduct.body as any).id}`, { method: 'PUT', body: JSON.stringify({ companyId, actorId: cashier.id, category: 'Cashier updated', uoms: [] }) });
     const newProduct = await api('/management/products', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, name: 'QA Local Product', sku: 'QA-LOCAL', barcode: `${Date.now()}222`, classificationCode: '022', locationId: location.id, initialQuantity: 1, trackStock: true, uoms: [{ code: 'EA', name: 'Each', conversionFactor: 1, salePrice: 3, purchasePrice: 2 }] }) });
     expect((newProduct.body as any).source === 'LOCAL', 'Local product was not created');
     await api('/management/products', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, name: 'QA Local Product', sku: 'QA-LOCAL-2', classificationCode: '022', uoms: [{ code: 'EA', name: 'Each', conversionFactor: 1, salePrice: 3 }] }) }, 409);
     await api('/management/contacts', { method: 'POST', body: JSON.stringify({ companyId, actorId: cashier.id, name: 'Denied contact', entityType: 'MALAYSIAN_COMPANY', contactTypes: ['CUSTOMER'], phone: '60118888888' }) }, 403);
     await api('/management/contacts', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, name: 'QA Contact', entityType: 'MALAYSIAN_COMPANY', contactTypes: ['CUSTOMER'], phone: '60119999999' }) });
     await api('/management/contacts', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, name: 'QA Contact', entityType: 'MALAYSIAN_COMPANY', contactTypes: ['CUSTOMER'], phone: '60119999999' }) }, 409);
-    checks.push('product/contact creation and duplicate prevention');
+    checks.push('cashier and manager product management, contact authorization, and duplicate prevention');
 
     const history = (await api(`/sales/history?companyId=${companyId}&locationId=${location.id}`)).body as any[];
     expect(history.some((sale) => sale.status === 'VOIDED') && history.some((sale) => sale.returnStatus === 'EXCHANGED'), 'Receipt history does not show void and exchange states');
