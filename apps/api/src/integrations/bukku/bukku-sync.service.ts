@@ -22,12 +22,11 @@ export class BukkuSyncService {
     }
 
     const priceLevel = await this.db.priceLevel.upsert({ where: { companyId_code: { companyId, code: 'RETAIL' } }, update: { name: 'Retail' }, create: { companyId, name: 'Retail', code: 'RETAIL' } });
-    const stockLocation = company.locations.length === 1 ? company.locations[0] : undefined;
     const imported = new Map<string, ImportedProduct>();
     let created = 0; let updated = 0; let deactivated = 0; let bundlesSkipped = 0; let barcodeConflicts = 0;
 
     for (const item of catalogue.products) {
-      const result = await this.upsertCatalogueProduct(companyId, item, stockLocation?.id);
+      const result = await this.upsertCatalogueProduct(companyId, item);
       if (result.kind === 'bundle') { bundlesSkipped++; continue; }
       if (result.kind === 'deactivated') { deactivated++; continue; }
       if (result.kind === 'created') created++; else updated++;
@@ -40,7 +39,7 @@ export class BukkuSyncService {
     const sale = await this.importPrices(priceLevel.id, saleIds, 'SALE', imported);
     const purchase = await this.importPrices(priceLevel.id, purchaseIds, 'PURCHASE', imported);
     await this.db.company.update({ where: { id: companyId }, data: { bukkuProductVersion: catalogue.version ?? company.bukkuProductVersion } });
-    const after = { created, updated, deactivated, bundlesSkipped, barcodeConflicts, salePriceRequests: sale.requests, purchasePriceRequests: purchase.requests, priceFailures: sale.failures + purchase.failures, version: catalogue.version, stockImported: Boolean(stockLocation) };
+    const after = { created, updated, deactivated, bundlesSkipped, barcodeConflicts, salePriceRequests: sale.requests, purchasePriceRequests: purchase.requests, priceFailures: sale.failures + purchase.failures, version: catalogue.version, stockImported: false };
     await this.db.auditLog.create({ data: { companyId, action: 'BUKKU_PRODUCTS_IMPORTED', entityType: 'BukkuSync', after } });
     return { notChanged: false, ...after };
   }
@@ -61,7 +60,7 @@ export class BukkuSyncService {
     return { created, updated };
   }
 
-  private async upsertCatalogueProduct(companyId: string, item: BukkuProductCatalogue['products'][number], stockLocationId?: string) {
+  private async upsertCatalogueProduct(companyId: string, item: BukkuProductCatalogue['products'][number]) {
     const ref = await this.db.externalReference.findUnique({ where: { companyId_provider_entityType_externalId: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', externalId: item.externalId } } });
     if (item.bundle) {
       if (ref) await this.db.product.update({ where: { id: ref.localId }, data: { active: false, bukkuType: item.type } });
@@ -91,7 +90,6 @@ export class BukkuSyncService {
     await this.db.externalReference.upsert({ where: { companyId_provider_entityType_localId: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: saved.id } }, update: { externalId: item.externalId, syncedAt: new Date() }, create: { companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: saved.id, externalId: item.externalId } });
     const units = await this.upsertUnits(companyId, saved.id, item.units);
     const barcodeConflicts = await this.upsertBarcodes(saved.id, item.barcode, units);
-    if (stockLocationId && saved.trackStock && item.quantity != null) await this.db.stockSnapshot.upsert({ where: { locationId_productId: { locationId: stockLocationId, productId: saved.id } }, update: { quantity: item.quantity, capturedAt: new Date() }, create: { locationId: stockLocationId, productId: saved.id, quantity: item.quantity } });
     return { kind: product ? (active ? 'updated' as const : 'deactivated' as const) : 'created' as const, product: saved, units, barcodeConflicts, refreshPrices: !product || product.bukkuCatalogHash !== catalogHash };
   }
 

@@ -183,6 +183,18 @@ export function structuredMatchSpecificity(product: SearchableProduct, query: St
     + Number(query.productType ? Math.max(0, productTypes.length - 1) : 0);
 }
 
+export function structuredVariantPenalty(product: SearchableProduct, query: StructuredHardwareQuery) {
+  const name = canonicalHardwareText(product.name);
+  let penalty = 0;
+  // A generic NIPPLE query must prefer the plain product over specialised
+  // hose, KC, and reducing nipples which happen to share the same dimensions.
+  if (query.productType === 'NIPPLE' && /(^|[^\p{L}\p{N}])(?:hose|kc|reducing|r)\s*[/\-]?\s*nipple(?=$|[^\p{L}\p{N}])/iu.test(name)) penalty += 10;
+  // S/STEEL is RetailOS's canonical display term. Accepted aliases still
+  // match, but the canonical catalogue wording wins deterministic ties.
+  if (query.material === 'STAINLESS_STEEL' && !/(^|[^\p{L}\p{N}])s\s*\/\s*steel(?=$|[^\p{L}\p{N}])/iu.test(name)) penalty += 1;
+  return penalty;
+}
+
 export function expandedSearchTerms(query: string) {
   const normalized = normalizeProductText(query);
   const group = managedSynonymGroups.find((entries) => entries.some((entry) => {

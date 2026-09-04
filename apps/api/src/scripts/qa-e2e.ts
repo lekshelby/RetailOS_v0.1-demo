@@ -1,5 +1,6 @@
 import { createHash, randomBytes, scryptSync } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
+import { generatedAliasesForProduct, normalizeProductText, structuredSearchFieldsForProduct } from '../products/product-search';
 
 const baseUrl = process.env.QA_BASE_URL || 'http://172.18.208.1:3000/api';
 const db = new PrismaClient({ datasources: process.env.QA_DATABASE_URL ? { db: { url: process.env.QA_DATABASE_URL } } : undefined });
@@ -103,6 +104,17 @@ async function main() {
       { id: `${runCode}-fifo-001`, companyId, locationId: location.id, productId: fifoProduct.id, uomId: fifoUom.id, displayBatchId: 'PI-001', receivedQuantity: 10, remainingQuantity: 10, purchaseUnitCost: 5.59, finalUnitCost: 5.59, totalBatchValue: 55.90, receivedAt: new Date('2026-09-01T08:00:00Z'), status: 'POSTED', sourceType: 'BUKKU_PURCHASE' },
       { id: `${runCode}-fifo-002`, companyId, locationId: location.id, productId: fifoProduct.id, uomId: fifoUom.id, displayBatchId: 'PI-002', receivedQuantity: 20, remainingQuantity: 20, purchaseUnitCost: 3.70, finalUnitCost: 3.70, totalBatchValue: 74, receivedAt: new Date('2026-09-02T08:00:00Z'), status: 'POSTED', sourceType: 'BUKKU_PURCHASE' },
     ] });
+    for (const [sku, name] of [
+      ['QA-SS-NIPPLE', '1/2" S/STEEL NIPPLE'], ['QA-SS-HOSE', '1/2" S/STEEL HOSE NIPPLE'], ['QA-SS-REDUCER', '1/2" X 3/4" S/STEEL REDUCING NIPPLE'],
+      ['QA-MS-BEND', '10" M/S BEND'], ['QA-PIPE-SLEEVE', 'P/SLEEVE'], ['QA-WRONG-LARGE', '1 1/2" S/STEEL NIPPLE'], ['QA-WRONG-12', '#12 FASTENER'],
+    ]) {
+      const product = await db.product.create({ data: { companyId, sku, name, trackStock: false, ...structuredSearchFieldsForProduct([name]) } });
+      const uom = await db.productUOM.create({ data: { productId: product.id, code: 'EA', name: 'Each', conversionFactor: 1, isBase: true } });
+      await db.productPrice.create({ data: { productId: product.id, priceLevelId: retail.id, uomId: uom.id, amount: 10 } });
+      const aliases = generatedAliasesForProduct([name]);
+      const uniqueAliases = [...new Map(aliases.map((text) => [normalizeProductText(text).token, text])).values()];
+      if (uniqueAliases.length) await db.productAlias.createMany({ data: uniqueAliases.map((text) => { const normalized = normalizeProductText(text); return { productId: product.id, text, normalizedToken: normalized.token, normalizedCompact: normalized.compact, source: 'GENERATED', createdById: manager.id }; }) });
+    }
     const boot = await api(`/pos/bootstrap?companyCode=${encodeURIComponent(runCode)}`);
     expect((boot.body as any).company.id === companyId, 'Bootstrap did not return the isolated company');
     checks.push('bootstrap');
@@ -123,6 +135,7 @@ async function main() {
       `/management/contacts?companyId=${companyId}&actorId=${cashier.id}`,
       `/management/staff?companyId=${companyId}&actorId=${cashier.id}`,
       `/management/bukku/mapping-options?companyId=${companyId}&actorId=${cashier.id}`,
+      `/management/bukku/product-mappings?companyId=${companyId}&actorId=${cashier.id}`,
       `/sales/printer/health?companyId=${companyId}&actorId=${cashier.id}`,
     ];
     for (const path of cashierForbidden) await api(path, {}, 403);
@@ -156,6 +169,15 @@ async function main() {
     const lookup = await api(`/products/lookup?companyId=${companyId}&priceLevelId=${retail.id}&locationId=${location.id}&query=QA-ITEM-A`);
     expect((lookup.body as any[]).length === 1, 'Product lookup did not find the expected item');
     checks.push('product lookup');
+    const search = async (query: string) => (await api(`/products/lookup?companyId=${companyId}&priceLevelId=${retail.id}&locationId=${location.id}&query=${encodeURIComponent(query)}`)).body as Array<{ sku: string; name: string }>;
+    const halfSsNipple = await search('1/2 ss n');
+    const tenMsBend = await search('10 ms b');
+    for (const term of ['p-slip', 'p sleeve']) expect((await search(term))[0]?.sku === 'QA-PIPE-SLEEVE', `${term} did not resolve to P/SLEEVE`);
+    const exactHalf = await search('1/2"');
+    expect(halfSsNipple[0]?.sku === 'QA-SS-NIPPLE' && halfSsNipple.every((product) => product.sku !== 'QA-WRONG-LARGE' && product.sku !== 'QA-WRONG-12' && product.name.includes('S/STEEL') && product.name.includes('NIPPLE')), 'Structured 1/2 ss n search was broadened or ranked incorrectly');
+    expect(tenMsBend[0]?.sku === 'QA-MS-BEND', 'Structured 10 ms b search did not return the exact mild-steel bend');
+    expect(exactHalf.every((product) => product.sku !== 'QA-WRONG-LARGE' && product.sku !== 'QA-WRONG-12'), 'Exact 1/2-inch search leaked a forbidden larger or numeric size');
+    checks.push('hardware shorthand search is exact for 1/2 ss n and 10 ms b, resolves p-slip and p sleeve, and does not leak forbidden sizes');
 
     const noShiftBasic = { companyId, locationId: location.id, registerId: register.id, cashierId: cashier.id, priceLevelId: retail.id, customerId: customer.id, items: [{ productId: productA.id, uomId: productAUom.id, quantity: 1 }] };
     const beforeNoShift = { sales: await db.sale.count({ where: { companyId } }), payments: await db.payment.count({ where: { sale: { companyId } } }), stock: await db.stockSnapshot.findUnique({ where: { locationId_productId: { locationId: location.id, productId: productA.id } } }), syncJobs: await db.syncJob.count({ where: { companyId } }) };
@@ -172,6 +194,14 @@ async function main() {
     expect(afterNoShift.sales === beforeNoShift.sales && afterNoShift.payments === beforeNoShift.payments && afterNoShift.stock?.quantity.equals(beforeNoShift.stock?.quantity ?? 0) && afterNoShift.syncJobs === beforeNoShift.syncJobs, 'A checkout without an open shift mutated isolated test data');
     checks.push('open-shift requirement rejects cash, DuitNow, bank transfer, split, store credit, and offline replay without mutation');
 
+    await api('/management/bukku/product-mappings', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, productId: productA.id, bukkuItemId: `${runCode}-BUKKU-ITEM`, bukkuItemCode: 'QA-BUKKU-A', bukkuDisplayName: 'QA Bukku Item A', confirmed: true }) });
+    await api('/management/bukku/product-mappings', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, productId: productB.id, bukkuItemId: `${runCode}-BUKKU-ITEM`, bukkuItemCode: 'QA-BUKKU-DUPLICATE', bukkuDisplayName: 'QA conflicting item', confirmed: true }) }, 409);
+    const productMappings = (await api(`/management/bukku/product-mappings?companyId=${companyId}&actorId=${manager.id}`, { sessionToken: managerSession })).body as any;
+    const approvedMapping = productMappings.items.find((row: { productId: string; mappingStatus: string; bukkuItemCode: string }) => row.productId === productA.id && row.mappingStatus === 'APPROVED' && row.bukkuItemCode === 'QA-BUKKU-A');
+    expect(Boolean(approvedMapping), 'Approved Bukku product mapping was not returned');
+    expect(approvedMapping.auditHistory.some((row: { action: string }) => row.action === 'BUKKU_PRODUCT_MAPPING_APPROVED'), 'Bukku product mapping audit history was not returned');
+    checks.push('manager-only explicit Bukku product-ID mapping rejects a duplicate external item and records audit history');
+
     const shift = await db.shift.create({ data: { locationId: location.id, registerId: register.id, cashierId: cashier.id, openingFloat: 100 } });
     const basic = { ...noShiftBasic, shiftId: shift.id };
     const fifoSale = (await api('/sales/checkout', { method: 'POST', body: JSON.stringify({ ...basic, offlineId: `${runCode}-fifo-sale`, items: [{ productId: fifoProduct.id, uomId: fifoUom.id, quantity: 12 }], payments: [{ method: 'CASH', amount: 120 }] }) })).body as any;
@@ -187,6 +217,7 @@ async function main() {
     expect(restoredAllocation.inventoryBatch.displayBatchId === 'PI-002' && restoredAllocation.quantity.equals(2) && restoredAllocation.cogs?.equals('7.40'), 'Return was not restored to PI-002 at exact RM7.40 value');
     expect(fifoReturnLedger.valueDelta?.equals('7.40') && fifoSnapshot.quantity.equals(fifoAggregate._sum.remainingQuantity ?? 0), 'FIFO return ledger value or stock invariant is incorrect');
     checks.push('database-backed FIFO sale consumes original batches first; partial return restores PI-002 and reverses exactly RM7.40');
+
     const overridePreview = (await api('/backoffice/batches/preview', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, fileName: 'qa-fifo-override.csv', mimeType: 'text/csv', contentBase64: previewCsv([{ action: 'adjust_stock', sku: fifoProduct.sku, unit: 'EA', stock_quantity: -2, stock_adjustment_reason: 'QA FIFO override', fifo_override_batch: adjustmentBatch.displayBatchId, fifo_override_reason: 'QA approved selected batch' }]) }) })).body as any;
     await api(`/backoffice/batches/${overridePreview.id}/commit`, { method: 'POST', sessionToken: managerSession, approvalToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, managerId: manager.id, confirmed: true, stockShortageAcknowledged: false }) });
     const adjustmentAfterOverride = await db.inventoryBatch.findUniqueOrThrow({ where: { id: adjustmentBatch.id } });
@@ -204,6 +235,24 @@ async function main() {
     const afterShortageAggregate = await db.inventoryBatch.aggregate({ where: { companyId, locationId: location.id, productId: fifoProduct.id, status: { in: ['POSTED', 'SHORTAGE'] } }, _sum: { remainingQuantity: true } });
     expect(shortageAdjustmentBatch.remainingQuantity.equals(-1) && afterShortageAdjustment.quantity.equals(-1) && afterShortageAdjustment.quantity.equals(afterShortageAggregate._sum.remainingQuantity ?? 0), 'Acknowledged FIFO adjustment shortage was not persisted consistently');
     checks.push('database-backed negative FIFO adjustments consume in order, audit override, require shortage acknowledgement, and preserve invariant');
+
+    const historicalCogs = fifoSaleItem.cogs?.toFixed(2);
+    const stockBeforePurchase = afterShortageAdjustment.quantity;
+    const purchaseReference = `${runCode}-BILL-001`;
+    const purchasePreview = (await api('/backoffice/batches/preview', { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, fileName: 'qa-bukku-purchase.csv', mimeType: 'text/csv', contentBase64: previewCsv([{ action: 'receive_purchase', sku: fifoProduct.sku, unit: 'EA', received_quantity: 5, purchase_unit_cost: '4.50', landed_cost: '0.50', supplier: 'QA Bukku Supplier', bukku_reference: purchaseReference, bill_date: '2026-09-04', received_date: '2026-09-04' }]) }) })).body as any;
+    expect(purchasePreview.validRowCount === 1 && purchasePreview.invalidRowCount === 0, 'Bukku purchase row did not validate');
+    await api(`/backoffice/batches/${purchasePreview.id}/commit`, { method: 'POST', sessionToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, managerId: manager.id, confirmed: true, stockShortageAcknowledged: false }) });
+    const purchaseReceipt = await db.purchaseReceipt.findUniqueOrThrow({ where: { companyId_bukkuReference: { companyId, bukkuReference: purchaseReference } }, include: { batches: true } });
+    const stockWhileDraft = await db.stockSnapshot.findUniqueOrThrow({ where: { locationId_productId: { locationId: location.id, productId: fifoProduct.id } } });
+    expect(purchaseReceipt.status === 'DRAFT' && purchaseReceipt.batches.length === 1 && purchaseReceipt.batches[0].remainingQuantity.equals(0) && stockWhileDraft.quantity.equals(stockBeforePurchase), 'Purchase import changed inventory before explicit manager posting');
+    await api(`/backoffice/purchase-receipts/${purchaseReceipt.id}/post`, { method: 'POST', sessionToken: managerSession, approvalToken: managerSession, body: JSON.stringify({ companyId, actorId: manager.id, managerId: manager.id, confirmed: true, negativeStockAcknowledged: true }) });
+    const postedPurchase = await db.purchaseReceipt.findUniqueOrThrow({ where: { id: purchaseReceipt.id }, include: { batches: true } });
+    const stockAfterPurchase = await db.stockSnapshot.findUniqueOrThrow({ where: { locationId_productId: { locationId: location.id, productId: fifoProduct.id } } });
+    const unchangedHistoricalSale = await db.saleItem.findUniqueOrThrow({ where: { id: fifoSaleItem.id } });
+    expect(postedPurchase.status === 'POSTED' && postedPurchase.batches[0].remainingQuantity.equals(5) && postedPurchase.batches[0].finalUnitCost?.equals('4.60') && stockAfterPurchase.quantity.equals(stockBeforePurchase.plus(5)), 'Manager posting did not create the expected landed-cost FIFO batch');
+    expect(unchangedHistoricalSale.cogs?.toFixed(2) === historicalCogs, 'Posting a later purchase receipt changed historical sale COGS');
+    expect(await db.auditLog.count({ where: { companyId, action: 'FIFO_PURCHASE_RECEIPT_POSTED', entityId: purchaseReceipt.id } }) === 1, 'Purchase receipt manager approval audit was not persisted');
+    checks.push('Bukku purchase CSV creates a stock-neutral draft; explicit manager posting creates a landed-cost FIFO batch without changing historical COGS');
     await api('/sales/checkout', { method: 'POST', body: JSON.stringify({ ...basic, offlineId: `${runCode}-invalid-split`, payments: [{ method: 'CASH', amount: 5 }, { method: 'CARD', amount: 4 }] }) }, 400);
     checks.push('invalid split-payment rejection');
 
@@ -256,6 +305,7 @@ async function main() {
     const rejectionBaseline = {
       auditLogs: await db.auditLog.count({ where: { companyId, entityType: 'Shift', entityId: shift.id } }),
       syncJobs: await db.syncJob.count({ where: { companyId, entityType: 'SHIFT_DAILY_DIGEST', entityId: shift.id } }),
+      bukkuReferences: await db.externalReference.count({ where: { companyId, provider: 'BUKKU' } }),
     };
     const reportBefore = (await api(`/shifts/${shift.id}/report?companyId=${companyId}&actorId=${manager.id}`, { sessionToken: managerSession })).body as any;
     expect(reportBefore.stockShortages.some((entry: { receiptNo: string; shortageIntroduced: number; preSaleQuantity: number; soldQuantity: number; postSaleQuantity: number }) => entry.receiptNo === shortageSale.receiptNo && entry.preSaleQuantity === 3 && entry.soldQuantity === 4 && entry.postSaleQuantity === -1 && entry.shortageIntroduced === 1), 'The persisted shortage record is incomplete before shift close');
@@ -270,7 +320,7 @@ async function main() {
       bukkuReferences: await db.externalReference.count({ where: { companyId, provider: 'BUKKU' } }),
     };
     expect(rejectedShift.closedAt === null && rejectedShift.closingFloat === null, 'Rejected close wrote a closing timestamp or float');
-    expect(rejectionAfter.auditLogs === rejectionBaseline.auditLogs && rejectionAfter.syncJobs === rejectionBaseline.syncJobs && rejectionAfter.printedReports === 0 && rejectionAfter.exportedDigests === 0 && rejectionAfter.bukkuReferences === 0, 'Rejected close created a report, digest, or Bukku record');
+    expect(rejectionAfter.auditLogs === rejectionBaseline.auditLogs && rejectionAfter.syncJobs === rejectionBaseline.syncJobs && rejectionAfter.printedReports === 0 && rejectionAfter.exportedDigests === 0 && rejectionAfter.bukkuReferences === rejectionBaseline.bukkuReferences, 'Rejected close created a report, digest, or Bukku record');
     checks.push('stock-shortage close rejection leaves the shift open without report, digest, or Bukku side effects');
 
     const close = (await api(`/shifts/${shift.id}/close`, { method: 'POST', approvalToken: managerSession, body: JSON.stringify({ companyId, cashierId: cashier.id, managerId: manager.id, closingFloat: expectedCash, stockShortageAcknowledged: true }) })).body as any;

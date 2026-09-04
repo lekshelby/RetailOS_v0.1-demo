@@ -21,6 +21,10 @@ describe('Back Office shell', () => {
     expect(html).not.toContain('batch-template-xlsx');
     expect(app).toContain('/backoffice/batches/preview'); expect(app).toContain('/commit');
     expect(app).toContain('/backoffice/purchase-receipts/');
+    for (const id of ['show-bukku-product-mapping', 'bukku-product-mapping-list', 'bukku-product-mapping-form', 'bukku-mapping-confirmed']) expect(html).toContain(`id="${id}"`);
+    expect(app).toContain('/management/bukku/product-mappings');
+    expect(app).toContain("name === 'bukku-products'");
+    expect(app).toContain("'company.manage'");
     expect(app).toContain('/ledger?'); expect(app).toContain('STAFF_COUNT'); expect(app).toContain('BUKKU_PURCHASE');
     expect(app).toContain('Sales COGS review'); expect(app).toContain('Inventory exceptions');
   });

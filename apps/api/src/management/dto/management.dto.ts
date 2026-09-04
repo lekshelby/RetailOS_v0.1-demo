@@ -49,6 +49,14 @@ export class PreviewBukkuDailyInvoiceDto extends ManagerRequestDto {
   @IsString() @Length(1, 80) shiftId!: string;
 }
 
+export class ApproveBukkuProductMappingDto extends ManagerRequestDto {
+  @IsString() productId!: string;
+  @IsString() @Length(1, 160) bukkuItemId!: string;
+  @IsString() @Length(1, 160) bukkuItemCode!: string;
+  @IsString() @Length(1, 240) bukkuDisplayName!: string;
+  @IsBoolean() confirmed!: boolean;
+}
+
 export class CreateManagedStaffDto extends ManagerRequestDto {
   @IsString() @Length(1, 120) name!: string;
   @IsEmail() email!: string;

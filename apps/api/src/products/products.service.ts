@@ -4,7 +4,7 @@ import { PrismaService } from '../database/prisma.service';
 import { StockAdjustmentDto } from './dto/stock-adjustment.dto';
 import { latestInventoryCost, recordInventoryLedger } from '../inventory/inventory-ledger';
 import { adjustFifoInventory, assertFifoStockInvariant } from '../inventory/fifo';
-import { expandedSearchTerms, fuzzyProduct, matchesStructuredProduct, normalizeProductText, parseStructuredHardwareQuery, rankProduct, structuredMatchSpecificity, structuredRelatedScore } from './product-search';
+import { expandedSearchTerms, fuzzyProduct, matchesStructuredProduct, normalizeProductText, parseStructuredHardwareQuery, rankProduct, structuredMatchSpecificity, structuredRelatedScore, structuredVariantPenalty } from './product-search';
 
 @Injectable()
 export class ProductsService {
@@ -58,11 +58,11 @@ export class ProductsService {
         orderBy: [{ name: 'asc' }, { id: 'asc' }], take: related ? 100 : 50,
       });
         const normalizedQuery = normalizeProductText(term).token;
-        const scored = candidates.map((product) => ({ product, score: structuredRelatedScore(product, interpretation), specificity: structuredMatchSpecificity(product, interpretation), exactName: normalizeProductText(product.name).token === normalizedQuery }));
+        const scored = candidates.map((product) => ({ product, score: structuredRelatedScore(product, interpretation), specificity: structuredMatchSpecificity(product, interpretation), variantPenalty: structuredVariantPenalty(product, interpretation), exactName: normalizeProductText(product.name).token === normalizedQuery }));
       const minimumRelatedScore = Math.max(1, [interpretation.dimension, interpretation.material, interpretation.productType].filter(Boolean).length - 1);
       const matched = (related
-          ? scored.filter((entry) => entry.score >= minimumRelatedScore).sort((left, right) => right.score - left.score || left.specificity - right.specificity || left.product.name.localeCompare(right.product.name))
-          : scored.filter((entry) => matchesStructuredProduct(entry.product, interpretation)).sort((left, right) => Number(right.exactName) - Number(left.exactName) || left.specificity - right.specificity || left.product.name.localeCompare(right.product.name)))
+          ? scored.filter((entry) => entry.score >= minimumRelatedScore).sort((left, right) => right.score - left.score || left.specificity - right.specificity || left.variantPenalty - right.variantPenalty || left.product.name.localeCompare(right.product.name))
+          : scored.filter((entry) => matchesStructuredProduct(entry.product, interpretation)).sort((left, right) => Number(right.exactName) - Number(left.exactName) || left.specificity - right.specificity || left.variantPenalty - right.variantPenalty || left.product.name.localeCompare(right.product.name)))
         .slice(0, 20).map((entry) => ({ ...entry.product, matchedAlias: null }));
       if (!includeStructure) return matched;
       if (related) return { items: matched, interpretation, exact: false, relatedAvailable: false };

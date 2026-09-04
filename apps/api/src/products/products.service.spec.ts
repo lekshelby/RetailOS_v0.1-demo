@@ -26,6 +26,16 @@ describe('ProductsService structured hardware lookup', () => {
     expect(result.items.map((item) => item.id)).toEqual(['exact', 'compound']);
   });
 
+  it('ranks the canonical plain nipple first for shorthand input', async () => {
+    const db = { product: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([
+      row('hose', '1/2" S/STEEL HOSE NIPPLE'), row('kc', '1/2" S/STEEL KC NIPPLE'),
+      row('short-alias', '1/2" SS NIPPLE'), row('reducing', '1/2" X 3/8" S/STEEL R/NIPPLE'),
+      row('exact', '1/2" S/STEEL NIPPLE'),
+    ]) } } as unknown as PrismaService;
+    const result = await new ProductsService(db).lookup('company-1', '1/2 ss n', undefined, undefined, true) as { items: Array<{ id: string }> };
+    expect(result.items.map((item) => item.id)).toEqual(['exact', 'short-alias', 'hose', 'kc', 'reducing']);
+  });
+
   it('ranks an exact full product name above hose, KC, and reducing nipples', async () => {
     const db = { product: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([
       row('hose', '1/2" S/STEEL HOSE NIPPLE'), row('kc', '1/2" S/STEEL KC NIPPLE'),

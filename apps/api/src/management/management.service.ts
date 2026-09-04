@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { BukkuHttpClient } from '../integrations/bukku/bukku-http.client';
 import { receiptHistoryPaymentAmount } from '../checkout/checkout-calculator';
-import { CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, CreateProductAliasDto, DeleteManagedProductDto, ManagerRequestDto, ProductLifecycleDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
+import { ApproveBukkuProductMappingDto, CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, CreateProductAliasDto, DeleteManagedProductDto, ManagerRequestDto, ProductLifecycleDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
 import { recordInventoryLedger } from '../inventory/inventory-ledger';
 import { hashPin } from '../auth/pin';
 import { generatedAliasesForProduct, normalizeProductText, structuredSearchFieldsForProduct } from '../products/product-search';
@@ -116,6 +116,51 @@ export class ManagementService {
       contacts: (contactPayload.contacts ?? []).filter((contact) => contact.id != null).map((contact) => ({ id: String(contact.id), code: contact.code ?? '', name: contact.display_name ?? contact.legal_name ?? `Contact ${contact.id}` })).sort((left, right) => left.name.localeCompare(right.name)),
       locations: (locationPayload.locations ?? []).filter((location) => location.id != null).map((location) => ({ id: String(location.id), code: location.code ?? '', name: location.name ?? `Location ${location.id}` })),
     };
+  }
+
+  async listBukkuProductMappings(input: ManagerRequestDto, query?: string) {
+    await this.assertPermission(input, 'company.manage');
+    const term = query?.trim();
+    const products = await this.db.product.findMany({
+      where: { companyId: input.companyId, ...(term ? { OR: [{ sku: { contains: term, mode: 'insensitive' } }, { name: { contains: term, mode: 'insensitive' } }] } : {}) },
+      select: { id: true, sku: true, name: true, active: true, deletedAt: true }, orderBy: [{ sku: 'asc' }, { id: 'asc' }], take: 100,
+    });
+    const productIds = products.map((product) => product.id);
+    const [references, audits] = await Promise.all([
+      this.db.externalReference.findMany({ where: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: { in: productIds } } }),
+      this.db.auditLog.findMany({ where: { companyId: input.companyId, entityType: 'BukkuProductMapping', entityId: { in: productIds } }, include: { actor: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    const referenceByProduct = new Map(references.map((reference) => [reference.localId, reference]));
+    const auditsByProduct = new Map<string, typeof audits>();
+    for (const audit of audits) auditsByProduct.set(audit.entityId!, [...(auditsByProduct.get(audit.entityId!) ?? []), audit]);
+    const duplicateNames = new Map<string, number>();
+    for (const product of products) { const key = product.name.trim().toLocaleLowerCase('en'); duplicateNames.set(key, (duplicateNames.get(key) ?? 0) + 1); }
+    return { items: products.map((product) => {
+      const reference = referenceByProduct.get(product.id); const history = auditsByProduct.get(product.id) ?? [];
+      const approved = history.find((audit) => audit.action === 'BUKKU_PRODUCT_MAPPING_APPROVED' && this.jsonRecord(audit.after).bukkuItemId === reference?.externalId);
+      const details = approved ? this.jsonRecord(approved.after) : {};
+      const duplicateDisplayName = (duplicateNames.get(product.name.trim().toLocaleLowerCase('en')) ?? 0) > 1;
+      return { productId: product.id, sku: product.sku, productName: product.name, productStatus: product.deletedAt ? 'DELETED' : product.active ? 'ACTIVE' : 'DEACTIVATED', bukkuItemId: reference?.externalId ?? null, bukkuItemCode: typeof details.bukkuItemCode === 'string' ? details.bukkuItemCode : null, bukkuDisplayName: typeof details.bukkuDisplayName === 'string' ? details.bukkuDisplayName : null, mappingStatus: approved ? 'APPROVED' : reference ? 'REVIEW_REQUIRED' : 'UNMAPPED', duplicateConflictWarning: duplicateDisplayName ? 'Another RetailOS product has the same display name. Verify SKU and Bukku item ID; names are never used for automatic mapping.' : null, auditHistory: history.map((audit) => ({ action: audit.action, actor: audit.actor?.name ?? null, createdAt: audit.createdAt, before: audit.before, after: audit.after })) };
+    }) };
+  }
+
+  async approveBukkuProductMapping(input: ApproveBukkuProductMappingDto) {
+    await this.assertPermission(input, 'company.manage');
+    if (!input.confirmed) throw new BadRequestException('Explicit manager confirmation is required');
+    const product = await this.db.product.findFirst({ where: { id: input.productId, companyId: input.companyId }, select: { id: true, sku: true, name: true } });
+    if (!product) throw new NotFoundException('RetailOS product was not found');
+    const [current, conflict] = await Promise.all([
+      this.db.externalReference.findUnique({ where: { companyId_provider_entityType_localId: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: product.id } } }),
+      this.db.externalReference.findUnique({ where: { companyId_provider_entityType_externalId: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', externalId: input.bukkuItemId.trim() } } }),
+    ]);
+    if (conflict && conflict.localId !== product.id) throw new ConflictException(`Bukku item ${input.bukkuItemId.trim()} is already mapped to another RetailOS SKU`);
+    const after = { productId: product.id, retailosSku: product.sku, retailosProductName: product.name, bukkuItemId: input.bukkuItemId.trim(), bukkuItemCode: input.bukkuItemCode.trim(), bukkuDisplayName: input.bukkuDisplayName.trim(), mappingStatus: 'APPROVED', approvedById: input.actorId };
+    const reference = await this.db.$transaction(async (tx) => {
+      const saved = await tx.externalReference.upsert({ where: { companyId_provider_entityType_localId: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: product.id } }, update: { externalId: after.bukkuItemId, syncedAt: new Date() }, create: { companyId: input.companyId, provider: 'BUKKU', entityType: 'PRODUCT', localId: product.id, externalId: after.bukkuItemId } });
+      await tx.auditLog.create({ data: { companyId: input.companyId, actorId: input.actorId, action: 'BUKKU_PRODUCT_MAPPING_APPROVED', entityType: 'BukkuProductMapping', entityId: product.id, reason: 'Manager approved an explicit SKU-to-Bukku-item mapping', before: current ? { productId: product.id, bukkuItemId: current.externalId } : Prisma.JsonNull, after } });
+      return saved;
+    });
+    return { ...after, referenceId: reference.id };
   }
 
   private flattenBukkuAccounts(accounts: BukkuAccount[]): BukkuAccount[] {
@@ -373,6 +418,10 @@ export class ManagementService {
     const actor = await this.db.user.findFirst({ where: { id: input.actorId, companyId: input.companyId, status: 'ACTIVE' }, include: { role: true } });
     const permissions = Array.isArray(actor?.role.permissions) ? actor.role.permissions : [];
     if (!actor || !required.some((permission) => permissions.includes(permission))) throw new ForbiddenException('You do not have access to settings');
+  }
+
+  private jsonRecord(value: Prisma.JsonValue | null | undefined): Record<string, Prisma.JsonValue> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, Prisma.JsonValue> : {};
   }
 
   private productView(product: ManagedProduct, imported: boolean, externalId?: string) {

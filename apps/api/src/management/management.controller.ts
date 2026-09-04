@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
-import { CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, CreateProductAliasDto, DeleteManagedProductDto, ManagerRequestDto, PreviewBukkuDailyInvoiceDto, ProductLifecycleDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
+import { ApproveBukkuProductMappingDto, CreateManagedContactDto, CreateManagedProductDto, CreateManagedStaffDto, CreateProductAliasDto, DeleteManagedProductDto, ManagerRequestDto, PreviewBukkuDailyInvoiceDto, ProductLifecycleDto, UpdateCompanyProfileDto, UpdateManagedProductDto, UpdateManagedStaffDto } from './dto/management.dto';
 import { ManagementService } from './management.service';
 
 @Controller('management')
@@ -8,6 +8,8 @@ export class ManagementController {
   @Get('company') company(@Query() input: ManagerRequestDto) { return this.management.profile(input); }
   @Put('company') updateCompany(@Body() input: UpdateCompanyProfileDto) { return this.management.updateProfile(input); }
   @Get('bukku/mapping-options') bukkuMappingOptions(@Query() input: ManagerRequestDto) { return this.management.bukkuMappingOptions(input); }
+  @Get('bukku/product-mappings') bukkuProductMappings(@Query() input: ManagerRequestDto, @Query('query') query?: string) { return this.management.listBukkuProductMappings(input, query); }
+  @Post('bukku/product-mappings') approveBukkuProductMapping(@Body() input: ApproveBukkuProductMappingDto) { return this.management.approveBukkuProductMapping(input); }
   @Get('bukku/daily-invoice-preview') previewBukkuDailyInvoice(@Query() input: PreviewBukkuDailyInvoiceDto) { return this.management.previewBukkuDailyInvoice(input.shiftId, input); }
   @Get('staff') staff(@Query() input: ManagerRequestDto) { return this.management.listStaff(input); }
   @Post('staff') createStaff(@Body() input: CreateManagedStaffDto) { return this.management.createStaff(input); }
