@@ -13,7 +13,7 @@ export type CanonicalReceipt = {
 
 type SaleForReceipt = {
   status: string; receiptNo: string; completedAt: Date | null; subtotal: Prisma.Decimal; discountTotal: Prisma.Decimal; taxTotal?: Prisma.Decimal; grandTotal: Prisma.Decimal; eInvoiceRequestToken?: string | null; receiptSnapshot?: Prisma.JsonValue | null;
-  company: { name: string; legalName: string | null; brnNew: string | null; registrationNo: string | null; brnOld: string | null; tin: string | null; address?: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; receiptTemplate?: string; receiptDividerStyle?: string; receiptShowLogo?: boolean; receiptShowSku?: boolean };
+  company: { name: string; legalName: string | null; brnNew: string | null; registrationNo: string | null; brnOld: string | null; tin: string | null; address?: string | null; officePhone: string | null; phone: string | null; email: string | null; receiptFooter: string | null; receiptPaperWidthMm: number; receiptTemplate?: string; receiptDividerStyle?: string; receiptShowLogo?: boolean; receiptShowSku?: boolean; customerEInvoiceRequestsEnabled?: boolean };
   location: { name: string }; register: { name: string }; cashier: { name: string };
   items: Array<{ description: string; quantity: Prisma.Decimal; uom: { name: string }; unitPrice: Prisma.Decimal; lineDiscount: Prisma.Decimal; lineTotal: Prisma.Decimal; product?: { sku: string } }>;
   payments: Array<{ method: string; amount: Prisma.Decimal; tenderedAmount: Prisma.Decimal; changeAmount: Prisma.Decimal }>;
@@ -39,13 +39,13 @@ export function canonicalReceipt(sale: SaleForReceipt, status: ReceiptStatus = s
   const company = { ...sale.company, ...savedCompany, ...savedPresentation } as typeof sale.company;
   const template: ReceiptTemplate = company.receiptTemplate === 'COMPACT' || company.receiptTemplate === 'DETAILED' ? company.receiptTemplate : 'STANDARD';
   return {
-    version: 2, status, widthMm: company.receiptPaperWidthMm, template, showLogo: Boolean(company.receiptShowLogo), showSku: Boolean(company.receiptShowSku), divider: company.receiptDividerStyle === 'DOUBLE' ? '=' : company.receiptDividerStyle === 'DOT' ? '·' : '-',
-    header: { companyName: company.legalName || company.name, address: company.address || null, brn: company.brnNew || company.registrationNo || null, oldBrn: company.brnOld || null, tin: company.tin || null, receiptNo: sale.receiptNo, dateTime: sale.completedAt?.toLocaleString('en-MY') || '', cashier: sale.cashier.name, registerLocation: `${sale.register.name} · ${sale.location.name}`, phone: company.officePhone || company.phone || null, email: company.email || null },
+    version: 2, status, widthMm: company.receiptPaperWidthMm, template, showLogo: Boolean(company.receiptShowLogo), showSku: Boolean(company.receiptShowSku), divider: company.receiptDividerStyle === 'DOUBLE' ? '=' : company.receiptDividerStyle === 'DOT' ? '.' : '-',
+    header: { companyName: company.legalName || company.name, address: company.address || null, brn: company.brnNew || company.registrationNo || null, oldBrn: company.brnOld || null, tin: company.tin || null, receiptNo: sale.receiptNo, dateTime: sale.completedAt?.toLocaleString('en-MY') || '', cashier: sale.cashier.name, registerLocation: `${sale.register.name} | ${sale.location.name}`, phone: company.officePhone || company.phone || null, email: company.email || null },
     items: sale.items.map((item) => ({ description: item.description, ...(company.receiptShowSku && item.product?.sku ? { sku: item.product.sku } : {}), quantity: Number(item.quantity), uom: item.uom.name, unitPrice: Number(item.unitPrice), discount: Number(item.lineDiscount), total: Number(item.lineTotal) })),
     totals: { subtotal: Number(sale.subtotal), discount: Number(sale.discountTotal), tax: Number(sale.taxTotal || 0), total: Number(sale.grandTotal) },
     payments: sale.payments.map((payment) => ({ method: payment.method.replaceAll('_', ' '), settled: payment.method === 'CASH' ? Number(payment.tenderedAmount) - Number(payment.changeAmount) : Number(payment.amount), ...(payment.method === 'CASH' ? { tendered: Number(payment.tenderedAmount), change: Number(payment.changeAmount) } : {}) })),
     policy: template === 'COMPACT' ? null : 'Returns, refunds and exchanges: until end of next working day only.', operatingHours: template === 'DETAILED' ? 'Operating hours: Mon–Sat, 8:30 AM–5:00 PM' : null, footer: company.receiptFooter || 'Thank you for shopping with us!',
-    eInvoice: sale.eInvoiceRequestToken ? { qrUrl: `/api/e-invoice/request/${encodeURIComponent(sale.eInvoiceRequestToken)}/qr`, explanation: 'Need an e-Invoice? Scan this QR to submit your details. This receipt is not validated by LHDN.' } : null,
+    eInvoice: sale.company.customerEInvoiceRequestsEnabled !== false && sale.eInvoiceRequestToken ? { qrUrl: `/api/e-invoice/request/${encodeURIComponent(sale.eInvoiceRequestToken)}/qr`, explanation: 'Need an e-Invoice? Scan this QR to submit your details. This receipt is not validated by LHDN.' } : null,
   };
 }
 
@@ -64,7 +64,7 @@ function itemLinesTable(item: CanonicalReceipt['items'][number], width: number) 
 export function receiptLines(document: CanonicalReceipt) {
   const width = charactersForPaper(document.widthMm); const divider = document.divider.repeat(width); const h = document.header;
   const rows = [center(document.status.replaceAll('_', ' / '), width), center(h.companyName, width), ...wrap(h.address || '', width).filter(Boolean).map((line) => center(line, width))];
-  const legal = [h.brn ? `BRN ${h.brn}${h.oldBrn ? ` (${h.oldBrn})` : ''}` : '', h.tin ? `TIN ${h.tin}` : ''].filter(Boolean).join(' · '); if (legal) rows.push(...wrap(legal, width).map((line) => center(line, width)));
+  const legal = [h.brn ? `BRN ${h.brn}${h.oldBrn ? ` (${h.oldBrn})` : ''}` : '', h.tin ? `TIN ${h.tin}` : ''].filter(Boolean).join(' | '); if (legal) rows.push(...wrap(legal, width).map((line) => center(line, width)));
   rows.push(divider, `Receipt: ${h.receiptNo}`, h.dateTime, `Cashier: ${h.cashier}`, `Register / location: ${h.registerLocation}`, divider);
   if (document.widthMm <= 58) for (const item of document.items) rows.push(...itemLines58(item, width));
   else { const descriptionWidth = width - 28; rows.push(`${left('Description', descriptionWidth)} ${right('Qty', 5)} ${right('U/Price', 10)} ${right('Total', 10)}`); for (const item of document.items) rows.push(...itemLinesTable(item, width)); }

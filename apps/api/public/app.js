@@ -719,7 +719,7 @@ async function completeReturn() {
 
 function canonicalReceiptHtml(document) {
   const header = document.header; const compact = Number(document.widthMm) <= 58;
-  const legal = [header.brn ? `BRN: ${header.brn}${header.oldBrn ? ` (${header.oldBrn})` : ''}` : '', header.tin ? `TIN: ${header.tin}` : ''].filter(Boolean).join(' · ');
+  const legal = [header.brn ? `BRN: ${header.brn}${header.oldBrn ? ` (${header.oldBrn})` : ''}` : '', header.tin ? `TIN: ${header.tin}` : ''].filter(Boolean).join(' | ');
   const items = compact
     ? document.items.map((item) => `<div class="receipt-item-compact"><strong>${escapeHtml(item.description)}</strong>${item.sku ? `<small>SKU: ${escapeHtml(item.sku)}</small>` : ''}<div><span>${escapeHtml(item.quantity)} ${escapeHtml(item.uom)} × ${money(item.unitPrice)}</span><strong>${money(item.total)}</strong></div>${Number(item.discount) ? `<div class="receipt-discount"><span>Discount</span><strong>−${money(item.discount)}</strong></div>` : ''}</div>`).join('')
     : `<div class="receipt-item-table"><div class="receipt-item-heading"><span>Description</span><span>Qty</span><span>U/Price</span><span>Total</span></div>${document.items.map((item) => `<div class="receipt-item-row"><div><strong>${escapeHtml(item.description)}</strong>${item.sku ? `<small>SKU: ${escapeHtml(item.sku)}</small>` : ''}</div><span>${escapeHtml(item.quantity)}</span><span>${money(item.unitPrice)}</span><strong>${money(item.total)}</strong>${Number(item.discount) ? `<div class="receipt-discount"><span>Discount</span><strong>−${money(item.discount)}</strong></div>` : ''}</div>`).join('')}</div>`;
